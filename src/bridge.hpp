@@ -104,6 +104,7 @@ public:
   bool restart_requested() const override;
   std::string error() const override;
   std::string stats() const override;
+  Mads::Agent &agent() const { return *_agent; }
 
 private:
   std::unique_ptr<Mads::Agent> _agent;
@@ -163,10 +164,15 @@ public:
   const BridgeConfig &config() const;
   std::string agent_name() const;
   std::string error() const;
-  std::string startup_info() const;
   std::string websocket_root_address() const;
   std::size_t connected_clients() const;
   bool consume_client_count_changed(std::size_t &count);
+  Mads::Agent &agent() const {
+    if (_mads_transport == nullptr) {
+      throw std::runtime_error("MADS transport is not available");
+    }
+    return static_cast<MadsTransport *>(_mads_transport.get())->agent();
+  }
 
 private:
   std::string _agent_name;
@@ -179,7 +185,6 @@ private:
   bool _manual_components = false;
   bool _shutdown = false;
   std::string _error;
-  std::string _startup_info;
 };
 
 } // namespace MadsWebsockets

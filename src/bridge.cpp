@@ -712,9 +712,6 @@ bool BridgeRuntime::initialize() {
         agent->set_pub_topic(settings["pub_topic"].get<std::string>());
       }
       agent->connect();
-      std::ostringstream info_stream;
-      agent->info(info_stream);
-      _startup_info = info_stream.str();
       _mads_transport = std::make_unique<MadsTransport>(std::move(agent), _config);
       _ws_transport = std::make_unique<WebSocketTransport>(_config);
     }
@@ -802,8 +799,6 @@ const BridgeConfig &BridgeRuntime::config() const { return _config; }
 std::string BridgeRuntime::agent_name() const { return _agent_name; }
 
 std::string BridgeRuntime::error() const { return _error; }
-
-std::string BridgeRuntime::startup_info() const { return _startup_info; }
 
 std::string BridgeRuntime::websocket_root_address() const {
   return websocket_root_uri(_config);

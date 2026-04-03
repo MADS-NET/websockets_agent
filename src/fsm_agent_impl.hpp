@@ -1,4 +1,5 @@
 #include "bridge.hpp"
+#include <rang.hpp>
 
 /******************************************************************************
 Finite State Machine
@@ -16,6 +17,7 @@ The finite state machine has:
 ******************************************************************************/
     
 using namespace std;
+using namespace rang;
 
 namespace {
 
@@ -30,7 +32,7 @@ void print_connected_clients_line(std::size_t count, bool overwrite = false) {
   if (overwrite) {
     std::cout << "\r\033[2K";
   }
-  std::cout << "Connected clients: " << count;
+  std::cout << "Connected clients: " << style::bold << count << style::reset;
   if (!overwrite) {
     std::cout << std::endl;
   } else {
@@ -65,16 +67,10 @@ state_t do_init(T &data) {
   if (!data.runtime.initialize()) {
     return FSM::STATE_STOP;
   }
-  auto startup_info = data.runtime.startup_info();
-  if (!startup_info.empty()) {
-    std::cout << startup_info;
-    if (startup_info.back() != '\n') {
-      std::cout << '\n';
-    }
-  }
-  std::cout << "  Websocket address: "
-            << data.runtime.websocket_root_address()
-            << std::endl;
+  data.runtime.agent().info(cout);
+  std::cout << "  Websocket addr:   "
+            << style::bold << data.runtime.websocket_root_address() 
+            << style::reset << std::endl;
   std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
   print_connected_clients_line(data.runtime.connected_clients(), true);
   return FSM::STATE_IDLE;
