@@ -79,7 +79,7 @@ public:
     return broadcast_ok;
   }
 
-  std::optional<std::string> pop_incoming_payload() override {
+  std::optional<BridgeMessage> pop_incoming_message() override {
     if (incoming.empty()) {
       return std::nullopt;
     }
@@ -100,36 +100,15 @@ public:
   bool stopped = false;
   int poll_count = 0;
   std::string error_message;
-  std::deque<std::string> incoming;
+  std::deque<BridgeMessage> incoming;
   std::deque<BridgeMessage> broadcasted;
 };
-
-void test_parse_valid_payload() {
-  std::string error;
-  auto message = BridgeCore::parse_client_payload(
-    R"({"topic":"alpha","message":{"value":7}})",
-    error
-  );
-  assert(message.has_value());
-  assert(message->topic == "alpha");
-  assert(message->message["value"] == 7);
-}
-
-void test_parse_invalid_payload() {
-  std::string error;
-  auto message = BridgeCore::parse_client_payload(
-    R"({"message":{"value":7}})",
-    error
-  );
-  assert(!message.has_value());
-  assert(!error.empty());
-}
 
 void test_bridge_core_routes_messages() {
   auto mads = std::make_unique<FakeMadsTransport>();
   auto ws = std::make_unique<FakeWebSocketTransport>();
 
-  ws->incoming.push_back(R"({"topic":"from_ws","message":{"x":1}})");
+  ws->incoming.push_back({"from_ws", {{"x", 1}}});
   mads->incoming.push_back({"from_mads", {{"y", 2}}});
 
   auto *mads_ptr = mads.get();
@@ -164,8 +143,6 @@ void test_runtime_stops_on_transport_request() {
 } // namespace
 
 int main() {
-  test_parse_valid_payload();
-  test_parse_invalid_payload();
   test_bridge_core_routes_messages();
   test_runtime_stops_on_transport_request();
   std::cout << "All tests passed\n";

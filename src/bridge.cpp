@@ -19,6 +19,8 @@ namespace {
 
 constexpr char kControlTopic[] = "control";
 constexpr char kProtocolName[] = "mads-websockets";
+constexpr char kDefaultWsBasePath[] = "/mads";
+constexpr char kAllTopics[] = "_all";
 
 std::string json_dump(const nlohmann::json &value) {
   return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -42,6 +44,70 @@ std::string websocket_bind_uri(const BridgeConfig &config) {
          config.ws_path;
 }
 
+std::string normalize_ws_base_path(std::string path) {
+  if (path.empty()) {
+    return kDefaultWsBasePath;
+  }
+  if (path.front() != '/') {
+    path.insert(path.begin(), '/');
+  }
+  while (path.size() > 1 && path.back() == '/') {
+    path.pop_back();
+  }
+  return path;
+}
+
+std::optional<std::string> topic_from_uri(std::string_view uri, std::string_view base_path) {
+  if (uri.empty()) {
+    return std::nullopt;
+  }
+  if (!uri.starts_with(base_path)) {
+    return std::nullopt;
+  }
+
+  auto topic_pos = base_path.size();
+  if (uri.size() <= topic_pos || uri[topic_pos] != '/') {
+    return std::nullopt;
+  }
+
+  auto topic = std::string(uri.substr(topic_pos + 1));
+  if (topic.empty()) {
+    return std::nullopt;
+  }
+
+  auto query_pos = topic.find_first_of("?#");
+  if (query_pos != std::string::npos) {
+    topic.erase(query_pos);
+  }
+
+  if (topic.empty()) {
+    return std::nullopt;
+  }
+
+  return topic;
+}
+
+std::optional<std::string> request_uri(lws *wsi) {
+  auto length = lws_hdr_total_length(wsi, WSI_TOKEN_GET_URI);
+  if (length <= 0) {
+    return std::nullopt;
+  }
+
+  std::string uri(static_cast<std::size_t>(length), '\0');
+  auto copied = lws_hdr_copy(
+    wsi,
+    uri.data(),
+    static_cast<int>(uri.size()) + 1,
+    WSI_TOKEN_GET_URI
+  );
+  if (copied <= 0) {
+    return std::nullopt;
+  }
+
+  uri.resize(static_cast<std::size_t>(copied));
+  return uri;
+}
+
 const char *websocket_iface(const BridgeConfig &config) {
   if (config.ws_host.empty() || config.ws_host == "0.0.0.0" ||
       config.ws_host == "::") {
@@ -51,10 +117,9 @@ const char *websocket_iface(const BridgeConfig &config) {
 }
 
 struct SessionState {
+  std::string topic;
   std::string rx_buffer;
   std::deque<std::string> tx_queue;
-  bool close_after_write = false;
-  bool writable_requested = false;
 };
 
 } // namespace
@@ -96,15 +161,9 @@ bool BridgeCore::tick() {
   _ws_transport.poll();
 
   while (true) {
-    auto payload = _ws_transport.pop_incoming_payload();
-    if (!payload.has_value()) {
-      break;
-    }
-
-    std::string parse_error;
-    auto message = parse_client_payload(*payload, parse_error);
+    auto message = _ws_transport.pop_incoming_message();
     if (!message.has_value()) {
-      continue;
+      break;
     }
 
     if (!_mads_transport.publish(*message)) {
@@ -166,35 +225,6 @@ std::string BridgeCore::stats() const {
   stream << "mads{" << _mads_transport.stats() << "} "
          << "ws{" << _ws_transport.stats() << "}";
   return stream.str();
-}
-
-std::optional<BridgeMessage> BridgeCore::parse_client_payload(
-  std::string_view payload,
-  std::string &error
-) {
-  try {
-    auto json = nlohmann::json::parse(payload);
-    if (!json.is_object()) {
-      error = "WebSocket payload must be a JSON object";
-      return std::nullopt;
-    }
-    if (!json.contains("topic") || !json["topic"].is_string()) {
-      error = "WebSocket payload must contain a string topic";
-      return std::nullopt;
-    }
-    if (!json.contains("message")) {
-      error = "WebSocket payload must contain a message field";
-      return std::nullopt;
-    }
-
-    return BridgeMessage{
-      json["topic"].get<std::string>(),
-      json["message"]
-    };
-  } catch (const std::exception &exc) {
-    error = exc.what();
-    return std::nullopt;
-  }
 }
 
 MadsTransport::MadsTransport(std::unique_ptr<Mads::Agent> agent, BridgeConfig config)
@@ -318,13 +348,16 @@ std::string MadsTransport::stats() const {
 }
 
 struct WebSocketTransport::Impl {
-  explicit Impl(BridgeConfig bridge_config) : config(std::move(bridge_config)) {}
+  explicit Impl(BridgeConfig bridge_config)
+    : config(std::move(bridge_config)),
+      base_path(normalize_ws_base_path(config.ws_path)) {}
 
   BridgeConfig config;
+  std::string base_path;
   lws_context *context = nullptr;
   mutable std::mutex mutex;
   std::unordered_map<lws *, SessionState> sessions;
-  std::deque<std::string> inbound_payloads;
+  std::deque<BridgeMessage> inbound_messages;
   bool started = false;
   bool healthy = true;
   std::string error;
@@ -364,11 +397,29 @@ struct WebSocketTransport::Impl {
     (void)user;
 
     switch (reason) {
+    case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
+      auto uri = request_uri(wsi);
+      auto topic = uri.has_value() ? topic_from_uri(*uri, base_path) : std::nullopt;
+      if (!topic.has_value()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        error = "Invalid WebSocket path; expected " + base_path + "/<topic>";
+        return 1;
+      }
+      break;
+    }
     case LWS_CALLBACK_ESTABLISHED:
       {
+        auto uri = request_uri(wsi);
+        auto topic = uri.has_value() ? topic_from_uri(*uri, base_path) : std::nullopt;
+        if (!topic.has_value()) {
+          healthy = false;
+          error = "Missing topic for established WebSocket session";
+          return -1;
+        }
+
         std::lock_guard<std::mutex> lock(mutex);
-      sessions.try_emplace(wsi);
-      ++accepted_connections;
+        sessions.try_emplace(wsi, SessionState{.topic = *topic});
+        ++accepted_connections;
       }
       break;
     case LWS_CALLBACK_CLOSED:
@@ -384,10 +435,19 @@ struct WebSocketTransport::Impl {
       if (iter != sessions.end()) {
         iter->second.rx_buffer.append(static_cast<const char *>(in), len);
         if (lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0) {
-          inbound_payloads.push_back(iter->second.rx_buffer);
+          try {
+            inbound_messages.push_back(BridgeMessage{
+              iter->second.topic,
+              nlohmann::json::parse(iter->second.rx_buffer)
+            });
+            ++inbound_frames;
+            last_inbound_at = std::chrono::steady_clock::now();
+          } catch (const std::exception &exc) {
+            healthy = false;
+            error = exc.what();
+            return -1;
+          }
           iter->second.rx_buffer.clear();
-          ++inbound_frames;
-          last_inbound_at = std::chrono::steady_clock::now();
         }
       }
       break;
@@ -510,15 +570,14 @@ bool WebSocketTransport::broadcast(const BridgeMessage &message) {
     return false;
   }
 
-  nlohmann::json envelope{
-    {"topic", message.topic},
-    {"message", message.message}
-  };
-  auto payload = json_dump(envelope);
+  auto payload = json_dump(message.message);
 
   {
     std::lock_guard<std::mutex> lock(_impl->mutex);
     for (auto &[wsi, state] : _impl->sessions) {
+      if (state.topic != kAllTopics && state.topic != message.topic) {
+        continue;
+      }
       (void)wsi;
       state.tx_queue.push_back(payload);
       ++_impl->outbound_enqueued;
@@ -529,17 +588,17 @@ bool WebSocketTransport::broadcast(const BridgeMessage &message) {
   return true;
 }
 
-std::optional<std::string> WebSocketTransport::pop_incoming_payload() {
+std::optional<BridgeMessage> WebSocketTransport::pop_incoming_message() {
   if (_impl == nullptr) {
     return std::nullopt;
   }
   std::lock_guard<std::mutex> lock(_impl->mutex);
-  if (_impl->inbound_payloads.empty()) {
+  if (_impl->inbound_messages.empty()) {
     return std::nullopt;
   }
-  auto payload = _impl->inbound_payloads.front();
-  _impl->inbound_payloads.pop_front();
-  return payload;
+  auto message = _impl->inbound_messages.front();
+  _impl->inbound_messages.pop_front();
+  return message;
 }
 
 void WebSocketTransport::stop() {
@@ -556,7 +615,7 @@ void WebSocketTransport::stop() {
   {
     std::lock_guard<std::mutex> lock(_impl->mutex);
     _impl->sessions.clear();
-    _impl->inbound_payloads.clear();
+    _impl->inbound_messages.clear();
   }
   _impl->started = false;
 }

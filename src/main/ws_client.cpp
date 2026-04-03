@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <libwebsockets.h>
@@ -21,13 +22,16 @@ using namespace cxxopts;
 
 namespace {
 
-constexpr char kDefaultAddress[] = "ws://localhost:8080";
+constexpr char kDefaultBaseAddress[] = "ws://localhost:8080";
+constexpr char kDefaultTopic[] = "_all";
+constexpr char kTopicRoot[] = "/mads";
 constexpr char kProtocolName[] = "mads-websockets";
 
 atomic<bool> Running{true};
 
 struct ClientConfig {
-  string address = kDefaultAddress;
+  string address = kDefaultBaseAddress;
+  vector<string> topics;
   bool listen = false;
   bool publish = false;
   bool debug = false;
@@ -43,13 +47,12 @@ struct ParsedAddress {
 
 struct ClientState {
   mutex mutex;
+  unordered_map<lws *, ParsedAddress> connections;
   deque<string> outbound_queue;
-  string inbound_buffer;
-  bool connected = false;
   bool connect_failed = false;
   bool close_requested = false;
   string error;
-  lws *wsi = nullptr;
+  lws *publish_wsi = nullptr;
 };
 
 class WsClient {
@@ -57,12 +60,25 @@ public:
   explicit WsClient(ClientConfig config) : _config(std::move(config)) {}
 
   int run() {
-    auto parsed = parse_address(_config.address);
-    if (!parsed.has_value()) {
-      cerr << "Invalid address: " << _config.address << endl;
+    if (_config.topics.empty()) {
+      _config.topics.push_back(kDefaultTopic);
+    }
+
+    for (const auto &topic : _config.topics) {
+      auto address = build_address(_config.address, topic);
+      auto parsed = parse_address(address);
+      if (!parsed.has_value()) {
+        cerr << "Invalid address: " << address
+             << " (expected ws://<host>:<port>/mads/<topic>)" << endl;
+        return EXIT_FAILURE;
+      }
+      _addresses.push_back(*parsed);
+    }
+
+    if (_config.publish && _addresses.size() != 1) {
+      cerr << "Publish mode requires exactly one topic" << endl;
       return EXIT_FAILURE;
     }
-    _address = *parsed;
 
     signal(SIGINT, handle_signal);
 
@@ -71,7 +87,7 @@ public:
       return EXIT_FAILURE;
     }
 
-    if (!connect()) {
+    if (!connect_all()) {
       cerr << _state.error << endl;
       destroy_context();
       return EXIT_FAILURE;
@@ -89,10 +105,10 @@ public:
         if (_state.connect_failed) {
           Running.store(false);
         }
-        if (_state.connected && !_state.outbound_queue.empty()) {
-          lws_callback_on_writable(_state.wsi);
+        if (_state.publish_wsi != nullptr && !_state.outbound_queue.empty()) {
+          lws_callback_on_writable(_state.publish_wsi);
         }
-        if (_state.close_requested && _state.connected && _state.outbound_queue.empty()) {
+        if (_state.close_requested && _state.outbound_queue.empty()) {
           Running.store(false);
         }
       }
@@ -134,8 +150,25 @@ private:
     parsed.host = address != nullptr ? address : "localhost";
     parsed.port = port != 0 ? port : (parsed.protocol == "wss" ? 443 : 80);
     parsed.path = path != nullptr && *path != '\0' ? path : "/";
+    if (!parsed.path.empty() && parsed.path.front() != '/') {
+      parsed.path.insert(parsed.path.begin(), '/');
+    }
     parsed.use_ssl = parsed.protocol == "wss";
+    if (!parsed.path.starts_with("/mads/") || parsed.path.size() <= 6) {
+      return nullopt;
+    }
     return parsed;
+  }
+
+  static string build_address(const string &base_address, string topic) {
+    auto normalized_base = base_address;
+    while (!normalized_base.empty() && normalized_base.back() == '/') {
+      normalized_base.pop_back();
+    }
+    while (!topic.empty() && topic.front() == '/') {
+      topic.erase(topic.begin());
+    }
+    return normalized_base + kTopicRoot + "/" + topic;
   }
 
   bool create_context() {
@@ -171,24 +204,36 @@ private:
     return true;
   }
 
-  bool connect() {
-    lws_client_connect_info info{};
-    info.context = _context;
-    info.address = _address.host.c_str();
-    info.port = _address.port;
-    info.path = _address.path.c_str();
-    info.host = _address.host.c_str();
-    info.origin = _address.host.c_str();
-    info.protocol = kProtocolName;
-    info.local_protocol_name = kProtocolName;
-    info.ssl_connection = _address.use_ssl ? LCCSCF_USE_SSL : 0;
-    info.pwsi = &_state.wsi;
+  bool connect_all() {
+    for (std::size_t index = 0; index < _addresses.size(); ++index) {
+      auto &address = _addresses[index];
 
-    auto *wsi = lws_client_connect_via_info(&info);
-    if (wsi == nullptr) {
-      _state.error = "Failed to initiate WebSocket client connection";
-      return false;
+      lws_client_connect_info info{};
+      info.context = _context;
+      info.address = address.host.c_str();
+      info.port = address.port;
+      info.path = address.path.c_str();
+      info.host = address.host.c_str();
+      info.origin = address.host.c_str();
+      info.protocol = kProtocolName;
+      info.local_protocol_name = kProtocolName;
+      info.ssl_connection = address.use_ssl ? LCCSCF_USE_SSL : 0;
+
+      auto *wsi = lws_client_connect_via_info(&info);
+      if (wsi == nullptr) {
+        _state.error = "Failed to initiate WebSocket client connection";
+        return false;
+      }
+
+      {
+        lock_guard<mutex> lock(_state.mutex);
+        _state.connections.emplace(wsi, address);
+        if (_config.publish && index == 0) {
+          _state.publish_wsi = wsi;
+        }
+      }
     }
+
     return true;
   }
 
@@ -250,12 +295,8 @@ private:
 
   int handle_callback(lws *wsi, lws_callback_reasons reason, void *in, size_t len) {
     switch (reason) {
-    case LWS_CALLBACK_CLIENT_ESTABLISHED: {
-      lock_guard<mutex> lock(_state.mutex);
-      _state.connected = true;
-      _state.wsi = wsi;
+    case LWS_CALLBACK_CLIENT_ESTABLISHED:
       break;
-    }
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
       lock_guard<mutex> lock(_state.mutex);
       _state.connect_failed = true;
@@ -264,15 +305,16 @@ private:
     }
     case LWS_CALLBACK_CLIENT_RECEIVE: {
       if (_config.listen) {
-        _state.inbound_buffer.append(static_cast<const char *>(in), len);
+        auto &buffer = _inbound_buffers[wsi];
+        buffer.append(static_cast<const char *>(in), len);
         if (lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0) {
           try {
-            auto json = nlohmann::json::parse(_state.inbound_buffer);
+            auto json = nlohmann::json::parse(buffer);
             cout << json.dump() << endl;
           } catch (const std::exception &) {
-            cout << _state.inbound_buffer << endl;
+            cout << buffer << endl;
           }
-          _state.inbound_buffer.clear();
+          buffer.clear();
         }
       }
       break;
@@ -311,8 +353,11 @@ private:
     }
     case LWS_CALLBACK_CLIENT_CLOSED: {
       lock_guard<mutex> lock(_state.mutex);
-      _state.connected = false;
-      _state.wsi = nullptr;
+      _state.connections.erase(wsi);
+      _inbound_buffers.erase(wsi);
+      if (_state.publish_wsi == wsi) {
+        _state.publish_wsi = nullptr;
+      }
       if (Running.load() && !_state.close_requested) {
         _state.error = "WebSocket connection closed";
       }
@@ -326,8 +371,9 @@ private:
   }
 
   ClientConfig _config;
-  ParsedAddress _address;
+  vector<ParsedAddress> _addresses;
   ClientState _state;
+  unordered_map<lws *, string> _inbound_buffers;
   lws_context *_context = nullptr;
 };
 
@@ -337,9 +383,10 @@ int main(int argc, char *argv[]) {
   Options options(argv[0]);
   // clang-format off
   options.add_options()
-    ("a,address", "WebSocket server address as <proto>://<host>:<port>[/path]", value<string>()->default_value(kDefaultAddress))
+    ("a,address", "WebSocket server address as <proto>://<host>:<port>", value<string>()->default_value(kDefaultBaseAddress))
     ("l,listen", "Listen and print incoming traffic to stdout")
     ("p,publish", "Read JSON from stdin and publish it; empty line exits")
+    ("t,topic", "Repeatable topic name appended as /mads/<topic>", value<vector<string>>())
     ("debug", "Enable libwebsockets debug output")
     ("h,help", "Print usage");
   // clang-format on
@@ -352,6 +399,9 @@ int main(int argc, char *argv[]) {
 
   ClientConfig config;
   config.address = parsed["address"].as<string>();
+  if (parsed.count("topic") != 0) {
+    config.topics = parsed["topic"].as<vector<string>>();
+  }
   config.listen = parsed.count("listen") != 0;
   config.publish = parsed.count("publish") != 0;
   config.debug = parsed.count("debug") != 0;

@@ -22,7 +22,7 @@ struct BridgeMessage {
 struct BridgeConfig {
   std::string ws_host = "0.0.0.0";
   int ws_port = 9002;
-  std::string ws_path = "/";
+  std::string ws_path = "/mads";
   std::chrono::milliseconds period{100};
   std::chrono::milliseconds receive_timeout{50};
   bool non_blocking = false;
@@ -54,7 +54,7 @@ public:
   virtual bool start() = 0;
   virtual void poll() = 0;
   virtual bool broadcast(const BridgeMessage &message) = 0;
-  virtual std::optional<std::string> pop_incoming_payload() = 0;
+  virtual std::optional<BridgeMessage> pop_incoming_message() = 0;
   virtual void stop() = 0;
   virtual bool healthy() const = 0;
   virtual std::string error() const = 0;
@@ -72,11 +72,6 @@ public:
   bool should_stop() const;
   std::string error() const;
   std::string stats() const;
-
-  static std::optional<BridgeMessage> parse_client_payload(
-    std::string_view payload,
-    std::string &error
-  );
 
 private:
   IMadsTransport &_mads_transport;
@@ -133,7 +128,7 @@ public:
   bool start() override;
   void poll() override;
   bool broadcast(const BridgeMessage &message) override;
-  std::optional<std::string> pop_incoming_payload() override;
+  std::optional<BridgeMessage> pop_incoming_message() override;
   void stop() override;
   bool healthy() const override;
   std::string error() const override;
