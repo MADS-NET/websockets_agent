@@ -1,7 +1,6 @@
 #include <cxxopts.hpp>
 
 #include <atomic>
-#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <deque>
@@ -31,6 +30,7 @@ struct ClientConfig {
   string address = kDefaultAddress;
   bool listen = false;
   bool publish = false;
+  bool debug = false;
 };
 
 struct ParsedAddress {
@@ -77,17 +77,10 @@ public:
       return EXIT_FAILURE;
     }
 
-    cerr << "ws_client: connecting to " << _config.address << endl;
-
     optional<thread> input_thread;
     if (_config.publish) {
       input_thread.emplace([this]() { input_loop(); });
     }
-
-    if (_config.listen) {
-      cerr << "ws_client: waiting for incoming frames" << endl;
-    }
-
     while (Running.load()) {
       lws_service(_context, 50);
 
@@ -146,6 +139,11 @@ private:
   }
 
   bool create_context() {
+    lws_set_log_level(
+      _config.debug ? (LLL_ERR | LLL_WARN | LLL_NOTICE) : 0,
+      nullptr
+    );
+
     static const lws_protocols protocols[] = {
       {
         kProtocolName,
@@ -225,6 +223,9 @@ private:
           lock_guard<mutex> lock(_state.mutex);
           _state.outbound_queue.push_back(std::move(normalized));
         }
+        if (_context != nullptr) {
+          lws_cancel_service(_context);
+        }
       } catch (const std::exception &exc) {
         cerr << "Invalid JSON: " << exc.what() << endl;
       }
@@ -253,7 +254,6 @@ private:
       lock_guard<mutex> lock(_state.mutex);
       _state.connected = true;
       _state.wsi = wsi;
-      cerr << "ws_client: connected" << endl;
       break;
     }
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
@@ -303,8 +303,6 @@ private:
         return -1;
       }
 
-      cerr << "ws_client: published 1 frame" << endl;
-
       lock_guard<mutex> lock(_state.mutex);
       if (!_state.outbound_queue.empty()) {
         lws_callback_on_writable(wsi);
@@ -315,7 +313,6 @@ private:
       lock_guard<mutex> lock(_state.mutex);
       _state.connected = false;
       _state.wsi = nullptr;
-      cerr << "ws_client: connection closed" << endl;
       if (Running.load() && !_state.close_requested) {
         _state.error = "WebSocket connection closed";
       }
@@ -343,6 +340,7 @@ int main(int argc, char *argv[]) {
     ("a,address", "WebSocket server address as <proto>://<host>:<port>[/path]", value<string>()->default_value(kDefaultAddress))
     ("l,listen", "Listen and print incoming traffic to stdout")
     ("p,publish", "Read JSON from stdin and publish it; empty line exits")
+    ("debug", "Enable libwebsockets debug output")
     ("h,help", "Print usage");
   // clang-format on
 
@@ -356,6 +354,7 @@ int main(int argc, char *argv[]) {
   config.address = parsed["address"].as<string>();
   config.listen = parsed.count("listen") != 0;
   config.publish = parsed.count("publish") != 0;
+  config.debug = parsed.count("debug") != 0;
 
   if (!config.listen && !config.publish) {
     cerr << "Select at least one mode: --listen or --publish" << endl;

@@ -48,6 +48,7 @@ public:
   bool should_stop() const override { return stop_requested; }
   bool restart_requested() const override { return restart; }
   std::string error() const override { return error_message; }
+  std::string stats() const override { return "fake-mads"; }
 
   bool start_ok = true;
   bool publish_ok = true;
@@ -90,6 +91,7 @@ public:
   void stop() override { stopped = true; }
   bool healthy() const override { return transport_healthy; }
   std::string error() const override { return error_message; }
+  std::string stats() const override { return "fake-ws"; }
 
   bool start_ok = true;
   bool broadcast_ok = true;

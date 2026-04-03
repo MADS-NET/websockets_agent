@@ -2,6 +2,7 @@
 #define MADS_WEBSOCKETS_BRIDGE_HPP
 
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,6 +26,7 @@ struct BridgeConfig {
   std::chrono::milliseconds period{100};
   std::chrono::milliseconds receive_timeout{50};
   bool non_blocking = false;
+  bool ws_silent = false;
 
   static BridgeConfig from_settings(const nlohmann::json &settings);
 };
@@ -42,6 +44,7 @@ public:
   virtual bool should_stop() const = 0;
   virtual bool restart_requested() const = 0;
   virtual std::string error() const = 0;
+  virtual std::string stats() const = 0;
 };
 
 class IWebSocketTransport {
@@ -55,6 +58,7 @@ public:
   virtual void stop() = 0;
   virtual bool healthy() const = 0;
   virtual std::string error() const = 0;
+  virtual std::string stats() const = 0;
 };
 
 class BridgeCore {
@@ -67,6 +71,7 @@ public:
   bool healthy() const;
   bool should_stop() const;
   std::string error() const;
+  std::string stats() const;
 
   static std::optional<BridgeMessage> parse_client_payload(
     std::string_view payload,
@@ -101,16 +106,23 @@ public:
   bool should_stop() const override;
   bool restart_requested() const override;
   std::string error() const override;
+  std::string stats() const override;
 
 private:
   std::unique_ptr<Mads::Agent> _agent;
   BridgeConfig _config;
-  std::optional<BridgeMessage> _incoming;
+  std::deque<BridgeMessage> _incoming_queue;
   bool _started = false;
   bool _healthy = true;
   bool _should_stop = false;
   bool _restart_requested = false;
   std::string _error;
+  std::size_t _received_json_count = 0;
+  std::size_t _published_count = 0;
+  std::string _last_received_topic;
+  std::string _last_published_topic;
+  std::chrono::steady_clock::time_point _last_received_at{};
+  std::chrono::steady_clock::time_point _last_published_at{};
 };
 
 class WebSocketTransport final : public IWebSocketTransport {
@@ -125,6 +137,7 @@ public:
   void stop() override;
   bool healthy() const override;
   std::string error() const override;
+  std::string stats() const override;
 
 private:
   struct Impl;
