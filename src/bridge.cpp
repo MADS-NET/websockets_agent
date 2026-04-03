@@ -1,6 +1,7 @@
 #include "bridge.hpp"
 
 #include <deque>
+#include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -17,6 +18,19 @@ constexpr char kProtocolName[] = "mads-websockets";
 
 std::string json_dump(const nlohmann::json &value) {
   return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string websocket_bind_uri(const BridgeConfig &config) {
+  return "ws://" + config.ws_host + ":" + std::to_string(config.ws_port) +
+         config.ws_path;
+}
+
+const char *websocket_iface(const BridgeConfig &config) {
+  if (config.ws_host.empty() || config.ws_host == "0.0.0.0" ||
+      config.ws_host == "::") {
+    return nullptr;
+  }
+  return config.ws_host.c_str();
 }
 
 struct SessionState {
@@ -193,7 +207,6 @@ void MadsTransport::poll() {
     }
 
     auto [topic, payload_str] = _agent->last_message();
-    _agent->remote_control(payload_str);
 
     if (topic != kControlTopic) {
       _incoming = BridgeMessage{
@@ -371,10 +384,10 @@ bool WebSocketTransport::start() {
   };
 
   info.port = _impl->config.ws_port;
-  info.iface = _impl->config.ws_host.empty() ? nullptr : _impl->config.ws_host.c_str();
+  info.iface = websocket_iface(_impl->config);
   info.protocols = protocols;
   info.user = this;
-  info.options = LWS_SERVER_OPTION_DISABLE_IPV6;
+  info.options = 0;
 
   _impl->context = lws_create_context(&info);
   if (_impl->context == nullptr) {
@@ -463,7 +476,6 @@ bool BridgeRuntime::initialize() {
       auto agent = std::make_unique<Mads::Agent>(_agent_name, _settings_uri);
       agent->init(false, false);
       agent->connect();
-      agent->enable_remote_control();
       _config = BridgeConfig::from_settings(agent->get_settings());
       _mads_transport = std::make_unique<MadsTransport>(std::move(agent), _config);
       _ws_transport = std::make_unique<WebSocketTransport>(_config);
@@ -486,6 +498,10 @@ bool BridgeRuntime::initialize() {
 
     _bridge_core =
       std::make_unique<BridgeCore>(*_mads_transport, *_ws_transport);
+    std::cerr << "mads-websockets: agent=" << _agent_name
+              << " settings=" << _settings_uri
+              << " websocket_bind=" << websocket_bind_uri(_config)
+              << std::endl;
     _initialized = true;
     return true;
   } catch (const std::exception &exc) {

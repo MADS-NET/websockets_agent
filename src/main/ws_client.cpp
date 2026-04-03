@@ -22,7 +22,7 @@ using namespace cxxopts;
 
 namespace {
 
-constexpr char kDefaultAddress[] = "ws://localhost:9002";
+constexpr char kDefaultAddress[] = "ws://localhost:8080";
 constexpr char kProtocolName[] = "mads-websockets";
 
 atomic<bool> Running{true};
@@ -77,9 +77,15 @@ public:
       return EXIT_FAILURE;
     }
 
+    cerr << "ws_client: connecting to " << _config.address << endl;
+
     optional<thread> input_thread;
     if (_config.publish) {
       input_thread.emplace([this]() { input_loop(); });
+    }
+
+    if (_config.listen) {
+      cerr << "ws_client: waiting for incoming frames" << endl;
     }
 
     while (Running.load()) {
@@ -247,6 +253,7 @@ private:
       lock_guard<mutex> lock(_state.mutex);
       _state.connected = true;
       _state.wsi = wsi;
+      cerr << "ws_client: connected" << endl;
       break;
     }
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
@@ -296,6 +303,8 @@ private:
         return -1;
       }
 
+      cerr << "ws_client: published 1 frame" << endl;
+
       lock_guard<mutex> lock(_state.mutex);
       if (!_state.outbound_queue.empty()) {
         lws_callback_on_writable(wsi);
@@ -306,6 +315,7 @@ private:
       lock_guard<mutex> lock(_state.mutex);
       _state.connected = false;
       _state.wsi = nullptr;
+      cerr << "ws_client: connection closed" << endl;
       if (Running.load() && !_state.close_requested) {
         _state.error = "WebSocket connection closed";
       }
