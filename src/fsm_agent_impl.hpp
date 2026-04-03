@@ -16,6 +16,29 @@ The finite state machine has:
 ******************************************************************************/
     
 using namespace std;
+
+namespace {
+
+std::string startup_process_label(std::string agent_name) {
+  if (!agent_name.empty()) {
+    agent_name.front() = static_cast<char>(std::toupper(agent_name.front()));
+  }
+  return agent_name + " process started";
+}
+
+void print_connected_clients_line(std::size_t count, bool overwrite = false) {
+  if (overwrite) {
+    std::cout << "\r\033[2K";
+  }
+  std::cout << "Connected clients: " << count;
+  if (!overwrite) {
+    std::cout << std::endl;
+  } else {
+    std::cout << std::flush;
+  }
+}
+
+}
     
 // SEARCH FOR Your Code Here FOR CODE INSERTION POINTS!
 
@@ -42,6 +65,18 @@ state_t do_init(T &data) {
   if (!data.runtime.initialize()) {
     return FSM::STATE_STOP;
   }
+  auto startup_info = data.runtime.startup_info();
+  if (!startup_info.empty()) {
+    std::cout << startup_info;
+    if (startup_info.back() != '\n') {
+      std::cout << '\n';
+    }
+  }
+  std::cout << "  Websocket address: "
+            << data.runtime.websocket_root_address()
+            << std::endl;
+  std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
+  print_connected_clients_line(data.runtime.connected_clients(), true);
   return FSM::STATE_IDLE;
 }
 
@@ -65,14 +100,26 @@ state_t do_idle(T &data) {
 // valid return states: NO_CHANGE, STATE_RUN, STATE_IDLE
 template<class T> 
 state_t do_run(T &data) {
-  switch (data.runtime.run_once()) {
+  auto next = data.runtime.run_once();
+  std::size_t client_count = 0;
+  auto changed = data.runtime.consume_client_count_changed(client_count);
+  switch (next) {
   case MadsWebsockets::RuntimeDecision::idle:
+    if (changed) {
+      print_connected_clients_line(client_count, true);
+    }
     return FSM::STATE_IDLE;
   case MadsWebsockets::RuntimeDecision::stop:
+    if (changed) {
+      print_connected_clients_line(client_count, true);
+    }
     return FSM::STATE_STOP;
   case MadsWebsockets::RuntimeDecision::run:
   case MadsWebsockets::RuntimeDecision::stay:
   default:
+    if (changed) {
+      print_connected_clients_line(client_count, true);
+    }
     return FSM::STATE_RUN;
   }
 }
@@ -81,6 +128,7 @@ state_t do_run(T &data) {
 // valid return states: NO_CHANGE
 template<class T> 
 state_t do_stop(T &data) {
+  std::cout << std::endl;
   data.runtime.shutdown();
   return FSM::NO_CHANGE;
 }
@@ -108,4 +156,3 @@ void reset(T &data) {
 
 
 }; // namespace FSM
-

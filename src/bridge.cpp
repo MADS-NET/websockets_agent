@@ -57,6 +57,11 @@ std::string normalize_ws_base_path(std::string path) {
   return path;
 }
 
+std::string websocket_root_uri(const BridgeConfig &config) {
+  return "ws://" + config.ws_host + ":" + std::to_string(config.ws_port) +
+         normalize_ws_base_path(config.ws_path);
+}
+
 std::optional<std::string> topic_from_uri(std::string_view uri, std::string_view base_path) {
   if (uri.empty()) {
     return std::nullopt;
@@ -366,6 +371,7 @@ struct WebSocketTransport::Impl {
   std::size_t inbound_frames = 0;
   std::size_t outbound_enqueued = 0;
   std::size_t outbound_written = 0;
+  bool client_count_changed = false;
   std::chrono::steady_clock::time_point last_inbound_at{};
   std::chrono::steady_clock::time_point last_outbound_at{};
   std::atomic<bool> stop_requested{false};
@@ -420,6 +426,7 @@ struct WebSocketTransport::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         sessions.try_emplace(wsi, SessionState{.topic = *topic});
         ++accepted_connections;
+        client_count_changed = true;
       }
       break;
     case LWS_CALLBACK_CLOSED:
@@ -427,6 +434,7 @@ struct WebSocketTransport::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         sessions.erase(wsi);
         ++closed_connections;
+        client_count_changed = true;
       }
       break;
     case LWS_CALLBACK_RECEIVE: {
@@ -624,6 +632,26 @@ bool WebSocketTransport::healthy() const {
   return _impl != nullptr && _impl->healthy;
 }
 
+std::size_t WebSocketTransport::connected_clients() const {
+  if (_impl == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(_impl->mutex);
+  return _impl->sessions.size();
+}
+
+bool WebSocketTransport::consume_client_count_changed(std::size_t &count) {
+  if (_impl == nullptr) {
+    count = 0;
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(_impl->mutex);
+  count = _impl->sessions.size();
+  auto changed = _impl->client_count_changed;
+  _impl->client_count_changed = false;
+  return changed;
+}
+
 std::string WebSocketTransport::error() const {
   return _impl == nullptr ? "WebSocket transport is not available" : _impl->error;
 }
@@ -684,6 +712,9 @@ bool BridgeRuntime::initialize() {
         agent->set_pub_topic(settings["pub_topic"].get<std::string>());
       }
       agent->connect();
+      std::ostringstream info_stream;
+      agent->info(info_stream);
+      _startup_info = info_stream.str();
       _mads_transport = std::make_unique<MadsTransport>(std::move(agent), _config);
       _ws_transport = std::make_unique<WebSocketTransport>(_config);
     }
@@ -705,10 +736,6 @@ bool BridgeRuntime::initialize() {
 
     _bridge_core =
       std::make_unique<BridgeCore>(*_mads_transport, *_ws_transport);
-    std::cerr << "mads-websockets: agent=" << _agent_name
-              << " settings=" << _settings_uri
-              << " websocket_bind=" << websocket_bind_uri(_config)
-              << std::endl;
     _initialized = true;
     return true;
   } catch (const std::exception &exc) {
@@ -772,6 +799,26 @@ bool BridgeRuntime::ready() const { return _initialized; }
 
 const BridgeConfig &BridgeRuntime::config() const { return _config; }
 
+std::string BridgeRuntime::agent_name() const { return _agent_name; }
+
 std::string BridgeRuntime::error() const { return _error; }
+
+std::string BridgeRuntime::startup_info() const { return _startup_info; }
+
+std::string BridgeRuntime::websocket_root_address() const {
+  return websocket_root_uri(_config);
+}
+
+std::size_t BridgeRuntime::connected_clients() const {
+  return _ws_transport != nullptr ? _ws_transport->connected_clients() : 0;
+}
+
+bool BridgeRuntime::consume_client_count_changed(std::size_t &count) {
+  if (_ws_transport == nullptr) {
+    count = 0;
+    return false;
+  }
+  return _ws_transport->consume_client_count_changed(count);
+}
 
 } // namespace MadsWebsockets

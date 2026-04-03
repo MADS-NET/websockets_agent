@@ -399,6 +399,7 @@ int main(int argc, char *argv[]) {
 
   ClientConfig config;
   config.address = parsed["address"].as<string>();
+  auto explicit_topic_count = parsed.count("topic");
   if (parsed.count("topic") != 0) {
     config.topics = parsed["topic"].as<vector<string>>();
   }
@@ -408,6 +409,12 @@ int main(int argc, char *argv[]) {
 
   if (!config.listen && !config.publish) {
     cerr << "Select at least one mode: --listen or --publish" << endl;
+    cerr << options.help() << endl;
+    return EXIT_FAILURE;
+  }
+
+  if (config.publish && explicit_topic_count != 1) {
+    cerr << "Publish mode requires exactly one explicit --topic value" << endl;
     cerr << options.help() << endl;
     return EXIT_FAILURE;
   }

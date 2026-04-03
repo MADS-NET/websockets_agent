@@ -90,6 +90,13 @@ public:
 
   void stop() override { stopped = true; }
   bool healthy() const override { return transport_healthy; }
+  std::size_t connected_clients() const override { return client_count; }
+  bool consume_client_count_changed(std::size_t &count) override {
+    count = client_count;
+    auto changed = client_count_changed;
+    client_count_changed = false;
+    return changed;
+  }
   std::string error() const override { return error_message; }
   std::string stats() const override { return "fake-ws"; }
 
@@ -99,6 +106,8 @@ public:
   bool started = false;
   bool stopped = false;
   int poll_count = 0;
+  std::size_t client_count = 0;
+  bool client_count_changed = false;
   std::string error_message;
   std::deque<BridgeMessage> incoming;
   std::deque<BridgeMessage> broadcasted;

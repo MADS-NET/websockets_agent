@@ -57,6 +57,8 @@ public:
   virtual std::optional<BridgeMessage> pop_incoming_message() = 0;
   virtual void stop() = 0;
   virtual bool healthy() const = 0;
+  virtual std::size_t connected_clients() const = 0;
+  virtual bool consume_client_count_changed(std::size_t &count) = 0;
   virtual std::string error() const = 0;
   virtual std::string stats() const = 0;
 };
@@ -131,6 +133,8 @@ public:
   std::optional<BridgeMessage> pop_incoming_message() override;
   void stop() override;
   bool healthy() const override;
+  std::size_t connected_clients() const override;
+  bool consume_client_count_changed(std::size_t &count) override;
   std::string error() const override;
   std::string stats() const override;
 
@@ -157,7 +161,12 @@ public:
   bool restart_requested() const;
   bool ready() const;
   const BridgeConfig &config() const;
+  std::string agent_name() const;
   std::string error() const;
+  std::string startup_info() const;
+  std::string websocket_root_address() const;
+  std::size_t connected_clients() const;
+  bool consume_client_count_changed(std::size_t &count);
 
 private:
   std::string _agent_name;
@@ -170,6 +179,7 @@ private:
   bool _manual_components = false;
   bool _shutdown = false;
   std::string _error;
+  std::string _startup_info;
 };
 
 } // namespace MadsWebsockets
