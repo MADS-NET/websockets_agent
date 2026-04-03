@@ -45,7 +45,8 @@ The project expects these libraries to be available on the system:
 - cxxopts
 
 The current CMake configuration finds Mads with `find_package(Mads CONFIG)` and
-finds `libwebsockets` through `pkg-config`.
+finds `libwebsockets` through `pkg-config`. The terminal QR helper dependency
+`libqrcode` is fetched automatically with CMake `FetchContent`.
 
 ## Build
 
@@ -111,11 +112,21 @@ You can also override the agent name:
 
 At startup the agent prints the standard MADS info block, then:
 
-- `Websocket address: ws://<host>:<port>/mads`
+- `Websocket addr: ws://<host>:<port>/mads` for each detected external IPv4
+  endpoint
+- `Bootstrap QR:` containing a JSON payload for the future Expo client:
+  `{"scheme":"ws","port":<port>,"path":"<root-path>","addresses":["<ip>", ...]}`
 - `Connected clients: N`
 
 The connected client count is updated in place whenever a client connects or
 disconnects.
+
+## React Native Client Skeleton
+
+The repository also includes a standalone Expo workspace under
+[`react_client`](react_client). It is intentionally not part of the native
+CMake build and serves as the starting point for a React Native client that
+will later consume the bridge bootstrap QR payload.
 
 ## `ws_client`
 

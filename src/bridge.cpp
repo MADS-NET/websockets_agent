@@ -178,18 +178,39 @@ std::vector<std::string> collect_external_ip_addresses() {
 }
 #endif
 
-std::vector<std::string> websocket_external_uris(const BridgeConfig &config) {
+std::vector<std::string> websocket_external_hosts(const BridgeConfig &config) {
   if (!is_excluded_address(config.ws_host) && config.ws_host != "localhost") {
-    return {websocket_uri_for_host(config, config.ws_host)};
+    return {config.ws_host};
   }
 
-  auto addresses = collect_external_ip_addresses();
+  return collect_external_ip_addresses();
+}
+
+std::vector<std::string> websocket_external_uris(const BridgeConfig &config) {
+  auto hosts = websocket_external_hosts(config);
   std::vector<std::string> uris;
-  uris.reserve(addresses.size());
-  for (const auto &address : addresses) {
-    uris.push_back(websocket_uri_for_host(config, address));
+  uris.reserve(hosts.size());
+  for (const auto &host : hosts) {
+    uris.push_back(websocket_uri_for_host(config, host));
   }
   return uris;
+}
+
+std::optional<std::string> websocket_bootstrap_payload(
+  const BridgeConfig &config,
+  const std::vector<std::string> &hosts
+) {
+  if (hosts.empty()) {
+    return std::nullopt;
+  }
+
+  nlohmann::json payload = {
+    {"scheme", "ws"},
+    {"port", config.ws_port},
+    {"path", normalize_ws_base_path(config.ws_path)},
+    {"addresses", hosts}
+  };
+  return json_dump(payload);
 }
 
 std::optional<std::string> topic_from_uri(std::string_view uri, std::string_view base_path) {
@@ -930,8 +951,22 @@ std::string BridgeRuntime::agent_name() const { return _agent_name; }
 
 std::string BridgeRuntime::error() const { return _error; }
 
+std::vector<std::string> BridgeRuntime::websocket_external_hosts() const {
+  return ::MadsWebsockets::websocket_external_hosts(_config);
+}
+
 std::vector<std::string> BridgeRuntime::websocket_external_addresses() const {
   return websocket_external_uris(_config);
+}
+
+std::optional<std::string> BridgeRuntime::websocket_bootstrap_payload() const {
+  return websocket_bootstrap_payload(websocket_external_hosts());
+}
+
+std::optional<std::string> BridgeRuntime::websocket_bootstrap_payload(
+  const std::vector<std::string> &hosts
+) const {
+  return ::MadsWebsockets::websocket_bootstrap_payload(_config, hosts);
 }
 
 std::size_t BridgeRuntime::connected_clients() const {

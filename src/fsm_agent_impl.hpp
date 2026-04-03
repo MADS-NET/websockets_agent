@@ -1,4 +1,5 @@
 #include "bridge.hpp"
+#include "terminal_qr.hpp"
 #include <rang.hpp>
 
 /******************************************************************************
@@ -44,6 +45,21 @@ void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
   std::cout << style::reset << std::endl;
 }
 
+void print_websocket_qr(const MadsWebsockets::BridgeRuntime &runtime) {
+  auto payload = runtime.websocket_bootstrap_payload();
+  if (!payload.has_value()) {
+    return;
+  }
+
+  auto qr = MadsWebsockets::render_terminal_qr(*payload);
+  if (qr.empty()) {
+    return;
+  }
+
+  std::cout << "  Bootstrap QR:" << std::endl;
+  std::cout << qr;
+}
+
 void print_connected_clients_line(std::size_t count, bool overwrite = false) {
   if (overwrite) {
     std::cout << "\r\033[2K";
@@ -85,6 +101,7 @@ state_t do_init(T &data) {
   }
   data.runtime.agent().info(cout);
   print_websocket_addresses(data.runtime);
+  print_websocket_qr(data.runtime);
   std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
   print_connected_clients_line(data.runtime.connected_clients(), true);
   return FSM::STATE_IDLE;

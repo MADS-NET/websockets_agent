@@ -1,12 +1,15 @@
 #include "bridge.hpp"
+#include "terminal_qr.hpp"
 
 #include <cassert>
 #include <deque>
 #include <iostream>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 using MadsWebsockets::BridgeConfig;
 using MadsWebsockets::BridgeCore;
@@ -149,11 +152,59 @@ void test_runtime_stops_on_transport_request() {
   assert(runtime.idle() == RuntimeDecision::stop);
 }
 
+void test_runtime_reports_configured_external_host_and_bootstrap_payload() {
+  auto mads = std::make_unique<FakeMadsTransport>();
+  auto ws = std::make_unique<FakeWebSocketTransport>();
+
+  BridgeConfig config;
+  config.ws_host = "192.168.1.20";
+  config.ws_port = 9010;
+  config.ws_path = "mads/";
+
+  BridgeRuntime runtime(std::move(mads), std::move(ws), config);
+
+  auto hosts = runtime.websocket_external_hosts();
+  assert((hosts == std::vector<std::string>{"192.168.1.20"}));
+
+  auto addresses = runtime.websocket_external_addresses();
+  assert((addresses == std::vector<std::string>{"ws://192.168.1.20:9010/mads"}));
+
+  auto payload = runtime.websocket_bootstrap_payload();
+  assert(payload.has_value());
+
+  auto json = nlohmann::json::parse(*payload);
+  assert(json["scheme"] == "ws");
+  assert(json["port"] == 9010);
+  assert(json["path"] == "/mads");
+  assert((json["addresses"].get<std::vector<std::string>>() ==
+          std::vector<std::string>{"192.168.1.20"}));
+}
+
+void test_runtime_skips_bootstrap_payload_for_empty_host_list() {
+  auto mads = std::make_unique<FakeMadsTransport>();
+  auto ws = std::make_unique<FakeWebSocketTransport>();
+
+  BridgeRuntime runtime(std::move(mads), std::move(ws), BridgeConfig{});
+
+  auto payload = runtime.websocket_bootstrap_payload({});
+  assert(!payload.has_value());
+}
+
+void test_terminal_qr_renders_for_bootstrap_payload() {
+  auto qr = MadsWebsockets::render_terminal_qr(
+    R"({"scheme":"ws","port":9002,"path":"/mads","addresses":["192.168.1.20"]})"
+  );
+  assert(!qr.empty());
+}
+
 } // namespace
 
 int main() {
   test_bridge_core_routes_messages();
   test_runtime_stops_on_transport_request();
+  test_runtime_reports_configured_external_host_and_bootstrap_payload();
+  test_runtime_skips_bootstrap_payload_for_empty_host_list();
+  test_terminal_qr_renders_for_bootstrap_payload();
   std::cout << "All tests passed\n";
   return 0;
 }

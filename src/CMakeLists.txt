@@ -21,9 +21,30 @@ add_library(libMadsWebsockets STATIC
   bridge.cpp
 )
 
+add_library(libMadsWebsocketsQr OBJECT
+  terminal_qr.cpp
+)
+
 target_include_directories(libMadsWebsockets
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(libMadsWebsocketsQr
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(libMadsWebsocketsQr
+  PRIVATE
+    libqr
+)
+
+target_compile_features(libMadsWebsocketsQr PRIVATE cxx_std_20)
+
+target_sources(libMadsWebsockets
+  PRIVATE
+    $<TARGET_OBJECTS:libMadsWebsocketsQr>
 )
 
 target_link_libraries(libMadsWebsockets
