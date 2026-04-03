@@ -1,0 +1,18 @@
+digraph "ProjectName" {
+  # List of states
+  # Each state rnus its own function
+  init
+  idle
+  run
+  stop
+
+  # List of transitions
+  # Stable states transitions to themselves
+  # transitions labels are transition functions
+  init -> idle
+  idle -> idle
+  idle -> run
+  run -> run
+  run -> idle [label="reset"]
+  idle -> stop
+}
