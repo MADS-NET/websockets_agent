@@ -28,6 +28,22 @@ std::string startup_process_label(std::string agent_name) {
   return agent_name + " process started";
 }
 
+void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
+  auto addresses = runtime.websocket_external_addresses();
+  std::cout << "  Websocket addr:   " << style::bold;
+  if (addresses.empty()) {
+    std::cout << "<no external address found>";
+  } else {
+    for (std::size_t index = 0; index < addresses.size(); ++index) {
+      if (index != 0) {
+        std::cout << "\n                    ";
+      }
+      std::cout << addresses[index];
+    }
+  }
+  std::cout << style::reset << std::endl;
+}
+
 void print_connected_clients_line(std::size_t count, bool overwrite = false) {
   if (overwrite) {
     std::cout << "\r\033[2K";
@@ -68,9 +84,7 @@ state_t do_init(T &data) {
     return FSM::STATE_STOP;
   }
   data.runtime.agent().info(cout);
-  std::cout << "  Websocket addr:   "
-            << style::bold << data.runtime.websocket_root_address() 
-            << style::reset << std::endl;
+  print_websocket_addresses(data.runtime);
   std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
   print_connected_clients_line(data.runtime.connected_clients(), true);
   return FSM::STATE_IDLE;

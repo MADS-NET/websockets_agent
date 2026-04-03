@@ -1,9 +1,11 @@
 #include "bridge.hpp"
 
-#include <deque>
+#include <array>
 #include <atomic>
+#include <deque>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -12,6 +14,17 @@
 #include <vector>
 
 #include <libwebsockets.h>
+
+#if defined(_WIN32)
+#include <iphlpapi.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#endif
 
 namespace MadsWebsockets {
 
@@ -60,6 +73,123 @@ std::string normalize_ws_base_path(std::string path) {
 std::string websocket_root_uri(const BridgeConfig &config) {
   return "ws://" + config.ws_host + ":" + std::to_string(config.ws_port) +
          normalize_ws_base_path(config.ws_path);
+}
+
+std::string websocket_uri_for_host(const BridgeConfig &config, std::string_view host) {
+  return "ws://" + std::string(host) + ":" + std::to_string(config.ws_port) +
+         normalize_ws_base_path(config.ws_path);
+}
+
+bool is_excluded_address(std::string_view address) {
+  return address.empty() || address == "0.0.0.0" || address == "127.0.0.1" ||
+         address == "::" || address == "::1";
+}
+
+#if defined(_WIN32)
+std::vector<std::string> collect_external_ip_addresses() {
+  ULONG buffer_size = 16 * 1024;
+  std::vector<unsigned char> buffer(buffer_size);
+  auto *addresses =
+    reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
+  ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                GAA_FLAG_SKIP_DNS_SERVER;
+  auto result = GetAdaptersAddresses(
+    AF_UNSPEC,
+    flags,
+    nullptr,
+    addresses,
+    &buffer_size
+  );
+  if (result == ERROR_BUFFER_OVERFLOW) {
+    buffer.resize(buffer_size);
+    addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
+    result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, addresses, &buffer_size);
+  }
+  if (result != NO_ERROR) {
+    return {};
+  }
+
+  std::set<std::string> collected;
+  std::array<char, INET6_ADDRSTRLEN> text_buffer{};
+  for (auto *adapter = addresses; adapter != nullptr; adapter = adapter->Next) {
+    if (adapter->OperStatus != IfOperStatusUp ||
+        adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+      continue;
+    }
+    for (auto *unicast = adapter->FirstUnicastAddress; unicast != nullptr;
+         unicast = unicast->Next) {
+      if (unicast->Address.lpSockaddr == nullptr) {
+        continue;
+      }
+      auto family = unicast->Address.lpSockaddr->sa_family;
+      const void *raw_address = nullptr;
+      if (family == AF_INET) {
+        raw_address =
+          &reinterpret_cast<sockaddr_in *>(unicast->Address.lpSockaddr)->sin_addr;
+      } else {
+        continue;
+      }
+      if (InetNtopA(family, const_cast<void *>(raw_address), text_buffer.data(),
+                    static_cast<DWORD>(text_buffer.size())) == nullptr) {
+        continue;
+      }
+      std::string address = text_buffer.data();
+      if (!is_excluded_address(address)) {
+        collected.insert(std::move(address));
+      }
+    }
+  }
+
+  return {collected.begin(), collected.end()};
+}
+#else
+std::vector<std::string> collect_external_ip_addresses() {
+  ifaddrs *interfaces = nullptr;
+  if (getifaddrs(&interfaces) != 0 || interfaces == nullptr) {
+    return {};
+  }
+
+  std::set<std::string> collected;
+  std::array<char, INET6_ADDRSTRLEN> text_buffer{};
+  for (auto *ifa = interfaces; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr || (ifa->ifa_flags & IFF_UP) == 0 ||
+        (ifa->ifa_flags & IFF_LOOPBACK) != 0) {
+      continue;
+    }
+    auto family = ifa->ifa_addr->sa_family;
+    const void *raw_address = nullptr;
+    if (family == AF_INET) {
+      raw_address = &reinterpret_cast<sockaddr_in *>(ifa->ifa_addr)->sin_addr;
+    } else {
+      continue;
+    }
+    if (inet_ntop(family, raw_address, text_buffer.data(), text_buffer.size()) ==
+        nullptr) {
+      continue;
+    }
+    std::string address = text_buffer.data();
+    if (!is_excluded_address(address)) {
+      collected.insert(std::move(address));
+    }
+  }
+
+  freeifaddrs(interfaces);
+  return {collected.begin(), collected.end()};
+}
+#endif
+
+std::vector<std::string> websocket_external_uris(const BridgeConfig &config) {
+  if (!is_excluded_address(config.ws_host) && config.ws_host != "localhost") {
+    return {websocket_uri_for_host(config, config.ws_host)};
+  }
+
+  auto addresses = collect_external_ip_addresses();
+  std::vector<std::string> uris;
+  uris.reserve(addresses.size());
+  for (const auto &address : addresses) {
+    uris.push_back(websocket_uri_for_host(config, address));
+  }
+  return uris;
 }
 
 std::optional<std::string> topic_from_uri(std::string_view uri, std::string_view base_path) {
@@ -800,8 +930,8 @@ std::string BridgeRuntime::agent_name() const { return _agent_name; }
 
 std::string BridgeRuntime::error() const { return _error; }
 
-std::string BridgeRuntime::websocket_root_address() const {
-  return websocket_root_uri(_config);
+std::vector<std::string> BridgeRuntime::websocket_external_addresses() const {
+  return websocket_external_uris(_config);
 }
 
 std::size_t BridgeRuntime::connected_clients() const {

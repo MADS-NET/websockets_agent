@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -164,7 +165,7 @@ public:
   const BridgeConfig &config() const;
   std::string agent_name() const;
   std::string error() const;
-  std::string websocket_root_address() const;
+  std::vector<std::string> websocket_external_addresses() const;
   std::size_t connected_clients() const;
   bool consume_client_count_changed(std::size_t &count);
   Mads::Agent &agent() const {
