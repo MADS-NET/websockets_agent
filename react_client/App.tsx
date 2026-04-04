@@ -48,6 +48,7 @@ type StatusInfo = {
 };
 
 const kStorageKey = 'mads-websockets-react-client/state/v1';
+const kWebSocketProtocol = 'mads-websockets';
 const kDefaultBootstrap: BootstrapPayload = {
   scheme: 'ws',
   port: 9002,
@@ -64,6 +65,7 @@ const kDefaultPersistedState: PersistedState = {
 };
 
 export default function App() {
+  const scanner_supported = Platform.OS !== 'web';
   const [active_tab, set_active_tab] = useState<TabId>('connect');
   const [hydrated, set_hydrated] = useState(false);
 
@@ -156,6 +158,60 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!hydrated || Platform.OS !== 'web' || typeof window === 'undefined') {
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`${window.location.origin}/bootstrap.json`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.text();
+      })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        const parsed = parse_bootstrap_payload(payload);
+        if (parsed == null) {
+          throw new Error('Invalid bootstrap payload');
+        }
+        set_bootstrap_payload(parsed);
+        set_address_input((current) => {
+          const replacement = `${window.location.hostname}:${parsed.port}`;
+          if (current.trim().length === 0) {
+            return replacement;
+          }
+
+          const existing = parse_browser_address(current);
+          if (existing == null) {
+            return current;
+          }
+
+          if (
+            existing.hostname === window.location.hostname &&
+            (existing.port === window.location.port ||
+              existing.protocol === 'http:' ||
+              existing.protocol === 'https:')
+          ) {
+            return replacement;
+          }
+
+          return current;
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn('Failed to load browser bootstrap', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated]);
+
+  useEffect(() => {
     if (active_tab !== 'listen' || listen_config == null) {
       close_listen_sockets(listen_sockets_ref);
       if (listen_config != null) {
@@ -176,7 +232,10 @@ export default function App() {
     const session_id = ++listen_session_ref.current;
     let opened_connections = 0;
     listen_sockets_ref.current = listen_config.topics.map((topic) => {
-      const socket = new WebSocket(build_topic_url(listen_config.base_address, listen_config.path, topic));
+      const socket = new WebSocket(
+        build_topic_url(listen_config.base_address, listen_config.path, topic),
+        kWebSocketProtocol
+      );
       socket.onopen = () => {
         if (listen_session_ref.current !== session_id) {
           return;
@@ -273,7 +332,8 @@ export default function App() {
     });
 
     const socket = new WebSocket(
-      build_topic_url(resolved_endpoint.base_address, resolved_endpoint.path, publish_topic.trim())
+      build_topic_url(resolved_endpoint.base_address, resolved_endpoint.path, publish_topic.trim()),
+      kWebSocketProtocol
     );
     publish_socket_ref.current = socket;
 
@@ -465,13 +525,17 @@ export default function App() {
             <View style={styles.panel}>
               <Text style={styles.section_title}>Bridge bootstrap</Text>
               <Text style={styles.section_body}>
-                Scan the QR from the bridge banner or type the LAN address manually.
+                {scanner_supported
+                  ? 'Scan the QR from the bridge banner or type the LAN address manually.'
+                  : 'This browser page loads its bridge settings from the gateway. You can still override the LAN address manually.'}
               </Text>
 
               <View style={styles.row}>
-                <Pressable style={styles.primary_button} onPress={handle_open_scanner}>
-                  <Text style={styles.primary_button_text}>Scan QR</Text>
-                </Pressable>
+                {scanner_supported ? (
+                  <Pressable style={styles.primary_button} onPress={handle_open_scanner}>
+                    <Text style={styles.primary_button_text}>Scan QR</Text>
+                  </Pressable>
+                ) : null}
                 <View style={styles.badge}>
                   <Text style={styles.badge_text}>
                     Path {normalize_path(bootstrap_payload?.path ?? kDefaultBootstrap.path)}
@@ -687,7 +751,7 @@ export default function App() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <Modal visible={scanner_visible} animationType="slide" onRequestClose={() => set_scanner_visible(false)}>
+      <Modal visible={scanner_visible && scanner_supported} animationType="slide" onRequestClose={() => set_scanner_visible(false)}>
         <SafeAreaView style={styles.modal_root}>
           <View style={styles.modal_header}>
             <Text style={styles.modal_title}>Scan bridge QR</Text>
@@ -868,16 +932,45 @@ function resolve_endpoint(
     if (url.hostname.length === 0) {
       return null;
     }
-    const scheme = url.protocol === 'wss:' ? 'wss' : 'ws';
-    const port = url.port.length > 0 ? Number(url.port) : fallback_port;
+
+    const is_http_like = url.protocol === 'http:' || url.protocol === 'https:';
+    const scheme = is_http_like ? fallback_scheme : url.protocol === 'wss:' ? 'wss' : 'ws';
+    const port = is_http_like
+      ? fallback_port
+      : url.port.length > 0
+          ? Number(url.port)
+          : fallback_port;
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
       return null;
     }
     const host = url.hostname.includes(':') ? `[${url.hostname}]` : url.hostname;
-    const path = normalize_path(url.pathname !== '/' ? url.pathname : fallback_path);
+    const path = is_http_like
+      ? fallback_path
+      : normalize_path(url.pathname !== '/' ? url.pathname : fallback_path);
     return {
       base_address: `${scheme}://${host}:${port}`,
       path,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parse_browser_address(
+  raw_address: string
+): { protocol: string; hostname: string; port: string } | null {
+  const trimmed = raw_address.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  try {
+    const candidate = trimmed.includes('://') ? trimmed : `http://${trimmed}`;
+    const url = new URL(candidate);
+    return {
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
     };
   } catch {
     return null;

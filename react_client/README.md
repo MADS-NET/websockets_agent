@@ -1,9 +1,9 @@
 # React Client
 
-`react_client` is a standalone Expo/React Native workspace for the future
-mobile-side UI of the MADS WebSockets bridge.
-
-This directory is intentionally independent from the native CMake build.
+`react_client` is the Expo/React Native workspace for the MADS WebSockets UI.
+It still runs as a standalone Expo app for development, and the native CMake
+build now exports it for the web and embeds the generated static files into the
+`mads-websockets` binary.
 
 ## Current scope
 
@@ -15,7 +15,24 @@ This directory is intentionally independent from the native CMake build.
 - Live listener sockets active only while the Listen tab is open
 - Persistent publish socket that reconnects when the selected topic changes
 
-## Expected bootstrap flow
+## Browser bootstrap flow
+
+When served by `mads-websockets`, the browser page loads from a QR-linked HTTP
+URL such as:
+
+```text
+http://192.168.1.20:8080/mads
+```
+
+The page then fetches:
+
+```text
+http://192.168.1.20:8080/bootstrap.json
+```
+
+That JSON contains the WebSocket settings used by the browser client.
+
+## Native bootstrap flow
 
 The native bridge prints a terminal QR code that encodes a JSON payload like:
 
@@ -54,5 +71,11 @@ Start Expo:
 npm start
 ```
 
-Then open the project in Expo Go on a device connected to the same LAN as the
-bridge.
+Then open the project in Expo Go or a simulator connected to the same LAN as
+the bridge.
+
+To export the web bundle manually:
+
+```bash
+npm run export:web
+```

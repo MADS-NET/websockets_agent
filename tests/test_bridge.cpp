@@ -28,9 +28,7 @@ public:
     return start_ok;
   }
 
-  void poll() override {
-    ++poll_count;
-  }
+  void poll() override { ++poll_count; }
 
   bool publish(const BridgeMessage &message) override {
     published.push_back(message);
@@ -73,9 +71,7 @@ public:
     return start_ok;
   }
 
-  void poll() override {
-    ++poll_count;
-  }
+  void poll() override { ++poll_count; }
 
   bool broadcast(const BridgeMessage &message) override {
     broadcasted.push_back(message);
@@ -160,6 +156,9 @@ void test_runtime_reports_configured_external_host_and_bootstrap_payload() {
   config.ws_host = "192.168.1.20";
   config.ws_port = 9010;
   config.ws_path = "mads/";
+  config.http_host = "192.168.1.20";
+  config.http_port = 8080;
+  config.http_path = "mads/";
 
   BridgeRuntime runtime(std::move(mads), std::move(ws), config);
 
@@ -167,7 +166,12 @@ void test_runtime_reports_configured_external_host_and_bootstrap_payload() {
   assert((hosts == std::vector<std::string>{"192.168.1.20"}));
 
   auto addresses = runtime.websocket_external_addresses();
-  assert((addresses == std::vector<std::string>{"ws://192.168.1.20:9010/mads"}));
+  assert(
+      (addresses == std::vector<std::string>{"ws://192.168.1.20:9010/mads"}));
+
+  auto http_addresses = runtime.http_external_addresses();
+  assert((http_addresses ==
+          std::vector<std::string>{"http://192.168.1.20:8080/mads"}));
 
   auto payload = runtime.websocket_bootstrap_payload();
   assert(payload.has_value());
@@ -192,8 +196,7 @@ void test_runtime_skips_bootstrap_payload_for_empty_host_list() {
 
 void test_terminal_qr_renders_for_bootstrap_payload() {
   auto qr = MadsWebsockets::render_terminal_qr(
-    R"({"scheme":"ws","port":9002,"path":"/mads","addresses":["192.168.1.20"]})"
-  );
+      R"({"scheme":"ws","port":9002,"path":"/mads","addresses":["192.168.1.20"]})");
   assert(!qr.empty());
 }
 

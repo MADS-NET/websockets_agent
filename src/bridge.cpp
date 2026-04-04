@@ -1,7 +1,10 @@
 #include "bridge.hpp"
+#include "web_assets.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <deque>
 #include <iostream>
 #include <mutex>
@@ -32,8 +35,11 @@ namespace {
 
 constexpr char kControlTopic[] = "control";
 constexpr char kProtocolName[] = "mads-websockets";
+constexpr char kHttpProtocolName[] = "http";
 constexpr char kDefaultWsBasePath[] = "/mads";
+constexpr char kDefaultHttpBasePath[] = "/mads";
 constexpr char kAllTopics[] = "_all";
+constexpr std::size_t kHttpWriteChunkSize = 16 * 1024;
 
 std::string json_dump(const nlohmann::json &value) {
   return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -43,23 +49,16 @@ std::string age_string(std::chrono::steady_clock::time_point when) {
   if (when == std::chrono::steady_clock::time_point{}) {
     return "-";
   }
-  auto age =
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - when
-    );
+  auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - when);
   std::ostringstream stream;
   stream << age.count() << "ms";
   return stream.str();
 }
 
-std::string websocket_bind_uri(const BridgeConfig &config) {
-  return "ws://" + config.ws_host + ":" + std::to_string(config.ws_port) +
-         config.ws_path;
-}
-
-std::string normalize_ws_base_path(std::string path) {
+std::string normalize_base_path(std::string path, std::string_view fallback) {
   if (path.empty()) {
-    return kDefaultWsBasePath;
+    return std::string(fallback);
   }
   if (path.front() != '/') {
     path.insert(path.begin(), '/');
@@ -70,14 +69,30 @@ std::string normalize_ws_base_path(std::string path) {
   return path;
 }
 
+std::string normalize_ws_base_path(std::string path) {
+  return normalize_base_path(std::move(path), kDefaultWsBasePath);
+}
+
+std::string normalize_http_base_path(std::string path) {
+  return normalize_base_path(std::move(path), kDefaultHttpBasePath);
+}
+
 std::string websocket_root_uri(const BridgeConfig &config) {
   return "ws://" + config.ws_host + ":" + std::to_string(config.ws_port) +
          normalize_ws_base_path(config.ws_path);
 }
 
-std::string websocket_uri_for_host(const BridgeConfig &config, std::string_view host) {
+std::string websocket_uri_for_host(const BridgeConfig &config,
+                                   std::string_view host) {
   return "ws://" + std::string(host) + ":" + std::to_string(config.ws_port) +
          normalize_ws_base_path(config.ws_path);
+}
+
+std::string http_uri_for_host(const BridgeConfig &config,
+                              std::string_view host) {
+  return "http://" + std::string(host) + ":" +
+         std::to_string(config.http_port) +
+         normalize_http_base_path(config.http_path);
 }
 
 bool is_excluded_address(std::string_view address) {
@@ -89,21 +104,16 @@ bool is_excluded_address(std::string_view address) {
 std::vector<std::string> collect_external_ip_addresses() {
   ULONG buffer_size = 16 * 1024;
   std::vector<unsigned char> buffer(buffer_size);
-  auto *addresses =
-    reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
+  auto *addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
   ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
                 GAA_FLAG_SKIP_DNS_SERVER;
-  auto result = GetAdaptersAddresses(
-    AF_UNSPEC,
-    flags,
-    nullptr,
-    addresses,
-    &buffer_size
-  );
+  auto result =
+      GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, addresses, &buffer_size);
   if (result == ERROR_BUFFER_OVERFLOW) {
     buffer.resize(buffer_size);
     addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
-    result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, addresses, &buffer_size);
+    result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, addresses,
+                                  &buffer_size);
   }
   if (result != NO_ERROR) {
     return {};
@@ -125,7 +135,8 @@ std::vector<std::string> collect_external_ip_addresses() {
       const void *raw_address = nullptr;
       if (family == AF_INET) {
         raw_address =
-          &reinterpret_cast<sockaddr_in *>(unicast->Address.lpSockaddr)->sin_addr;
+            &reinterpret_cast<sockaddr_in *>(unicast->Address.lpSockaddr)
+                 ->sin_addr;
       } else {
         continue;
       }
@@ -163,8 +174,8 @@ std::vector<std::string> collect_external_ip_addresses() {
     } else {
       continue;
     }
-    if (inet_ntop(family, raw_address, text_buffer.data(), text_buffer.size()) ==
-        nullptr) {
+    if (inet_ntop(family, raw_address, text_buffer.data(),
+                  text_buffer.size()) == nullptr) {
       continue;
     }
     std::string address = text_buffer.data();
@@ -178,12 +189,16 @@ std::vector<std::string> collect_external_ip_addresses() {
 }
 #endif
 
-std::vector<std::string> websocket_external_hosts(const BridgeConfig &config) {
-  if (!is_excluded_address(config.ws_host) && config.ws_host != "localhost") {
-    return {config.ws_host};
+std::vector<std::string> external_hosts_for_bind(std::string_view host) {
+  if (!is_excluded_address(host) && host != "localhost") {
+    return {std::string(host)};
   }
 
   return collect_external_ip_addresses();
+}
+
+std::vector<std::string> websocket_external_hosts(const BridgeConfig &config) {
+  return external_hosts_for_bind(config.ws_host);
 }
 
 std::vector<std::string> websocket_external_uris(const BridgeConfig &config) {
@@ -196,24 +211,39 @@ std::vector<std::string> websocket_external_uris(const BridgeConfig &config) {
   return uris;
 }
 
-std::optional<std::string> websocket_bootstrap_payload(
-  const BridgeConfig &config,
-  const std::vector<std::string> &hosts
-) {
+std::vector<std::string> http_external_hosts(const BridgeConfig &config) {
+  if (!config.http_enabled) {
+    return {};
+  }
+  return external_hosts_for_bind(config.http_host);
+}
+
+std::vector<std::string> http_external_uris(const BridgeConfig &config) {
+  auto hosts = http_external_hosts(config);
+  std::vector<std::string> uris;
+  uris.reserve(hosts.size());
+  for (const auto &host : hosts) {
+    uris.push_back(http_uri_for_host(config, host));
+  }
+  return uris;
+}
+
+std::optional<std::string>
+websocket_bootstrap_payload(const BridgeConfig &config,
+                            const std::vector<std::string> &hosts) {
   if (hosts.empty()) {
     return std::nullopt;
   }
 
-  nlohmann::json payload = {
-    {"scheme", "ws"},
-    {"port", config.ws_port},
-    {"path", normalize_ws_base_path(config.ws_path)},
-    {"addresses", hosts}
-  };
+  nlohmann::json payload = {{"scheme", "ws"},
+                            {"port", config.ws_port},
+                            {"path", normalize_ws_base_path(config.ws_path)},
+                            {"addresses", hosts}};
   return json_dump(payload);
 }
 
-std::optional<std::string> topic_from_uri(std::string_view uri, std::string_view base_path) {
+std::optional<std::string> topic_from_uri(std::string_view uri,
+                                          std::string_view base_path) {
   if (uri.empty()) {
     return std::nullopt;
   }
@@ -250,12 +280,8 @@ std::optional<std::string> request_uri(lws *wsi) {
   }
 
   std::string uri(static_cast<std::size_t>(length), '\0');
-  auto copied = lws_hdr_copy(
-    wsi,
-    uri.data(),
-    static_cast<int>(uri.size()) + 1,
-    WSI_TOKEN_GET_URI
-  );
+  auto copied = lws_hdr_copy(wsi, uri.data(), static_cast<int>(uri.size()) + 1,
+                             WSI_TOKEN_GET_URI);
   if (copied <= 0) {
     return std::nullopt;
   }
@@ -264,12 +290,11 @@ std::optional<std::string> request_uri(lws *wsi) {
   return uri;
 }
 
-const char *websocket_iface(const BridgeConfig &config) {
-  if (config.ws_host.empty() || config.ws_host == "0.0.0.0" ||
-      config.ws_host == "::") {
+const char *bind_iface(const std::string &host) {
+  if (host.empty() || host == "0.0.0.0" || host == "::") {
     return nullptr;
   }
-  return config.ws_host.c_str();
+  return host.c_str();
 }
 
 struct SessionState {
@@ -277,6 +302,83 @@ struct SessionState {
   std::string rx_buffer;
   std::deque<std::string> tx_queue;
 };
+
+struct HttpSessionState {
+  const EmbeddedWebAsset *asset = nullptr;
+  std::size_t offset = 0;
+  EmbeddedWebAsset dynamic_asset{};
+  std::string owned_payload;
+};
+
+bool is_http_asset_path(std::string_view path) {
+  return find_embedded_web_asset(path) != nullptr;
+}
+
+std::string resolve_http_request_path(const BridgeConfig &config,
+                                      std::string_view uri) {
+  auto http_base_path = normalize_http_base_path(config.http_path);
+  if (uri.empty()) {
+    return "/index.html";
+  }
+
+  if (uri == "/") {
+    return "/index.html";
+  }
+
+  if (uri == http_base_path || uri == http_base_path + "/") {
+    return "/index.html";
+  }
+
+  if (uri.starts_with(http_base_path + "/")) {
+    std::string stripped = std::string(uri.substr(http_base_path.size()));
+    if (is_http_asset_path(stripped)) {
+      return stripped;
+    }
+    return "/index.html";
+  }
+
+  if (is_http_asset_path(uri)) {
+    return std::string(uri);
+  }
+
+  return {};
+}
+
+std::string http_cache_control_header(const EmbeddedWebAsset &asset) {
+  if (asset.spa_entry) {
+    return "no-cache";
+  }
+  if (asset.cache_forever) {
+    return "public, max-age=31536000, immutable";
+  }
+  return "public, max-age=3600";
+}
+
+int write_http_response_headers(lws *wsi, const EmbeddedWebAsset &asset) {
+  std::array<unsigned char, 1024> buffer{};
+  unsigned char *start = buffer.data();
+  unsigned char *p = start;
+  unsigned char *end = buffer.data() + buffer.size() - 1;
+
+  if (lws_add_http_common_headers(wsi, HTTP_STATUS_OK, asset.content_type,
+                                  asset.size, &p, end) != 0) {
+    return 1;
+  }
+
+  auto cache_control = http_cache_control_header(asset);
+  if (lws_add_http_header_by_name(
+          wsi, reinterpret_cast<const unsigned char *>("cache-control:"),
+          reinterpret_cast<const unsigned char *>(cache_control.c_str()),
+          cache_control.size(), &p, end) != 0) {
+    return 1;
+  }
+
+  if (lws_finalize_write_http_header(wsi, start, &p, end) != 0) {
+    return 1;
+  }
+
+  return 0;
+}
 
 } // namespace
 
@@ -292,12 +394,24 @@ BridgeConfig BridgeConfig::from_settings(const nlohmann::json &settings) {
   if (settings.contains("ws_path")) {
     config.ws_path = settings["ws_path"].get<std::string>();
   }
+  if (settings.contains("http_enabled")) {
+    config.http_enabled = settings["http_enabled"].get<bool>();
+  }
+  if (settings.contains("http_host")) {
+    config.http_host = settings["http_host"].get<std::string>();
+  }
+  if (settings.contains("http_port")) {
+    config.http_port = settings["http_port"].get<int>();
+  }
+  if (settings.contains("http_path")) {
+    config.http_path = settings["http_path"].get<std::string>();
+  }
   if (settings.contains("period")) {
     config.period = std::chrono::milliseconds(settings["period"].get<int>());
   }
   if (settings.contains("receive_timeout")) {
     config.receive_timeout =
-      std::chrono::milliseconds(settings["receive_timeout"].get<int>());
+        std::chrono::milliseconds(settings["receive_timeout"].get<int>());
   }
   if (settings.contains("non_blocking")) {
     config.non_blocking = settings["non_blocking"].get<bool>();
@@ -309,8 +423,9 @@ BridgeConfig BridgeConfig::from_settings(const nlohmann::json &settings) {
   return config;
 }
 
-BridgeCore::BridgeCore(IMadsTransport &mads_transport, IWebSocketTransport &ws_transport)
-  : _mads_transport(mads_transport), _ws_transport(ws_transport) {}
+BridgeCore::BridgeCore(IMadsTransport &mads_transport,
+                       IWebSocketTransport &ws_transport)
+    : _mads_transport(mads_transport), _ws_transport(ws_transport) {}
 
 bool BridgeCore::tick() {
   _mads_transport.poll();
@@ -383,8 +498,9 @@ std::string BridgeCore::stats() const {
   return stream.str();
 }
 
-MadsTransport::MadsTransport(std::unique_ptr<Mads::Agent> agent, BridgeConfig config)
-  : _agent(std::move(agent)), _config(std::move(config)) {}
+MadsTransport::MadsTransport(std::unique_ptr<Mads::Agent> agent,
+                             BridgeConfig config)
+    : _agent(std::move(agent)), _config(std::move(config)) {}
 
 bool MadsTransport::start() {
   if (_agent == nullptr) {
@@ -420,10 +536,8 @@ void MadsTransport::poll() {
       auto [topic, payload_str] = _agent->last_message();
 
       if (topic != kControlTopic) {
-        _incoming_queue.push_back(BridgeMessage{
-          topic,
-          nlohmann::json::parse(payload_str)
-        });
+        _incoming_queue.push_back(
+            BridgeMessage{topic, nlohmann::json::parse(payload_str)});
         ++_received_json_count;
         _last_received_topic = topic;
         _last_received_at = std::chrono::steady_clock::now();
@@ -494,9 +608,10 @@ std::string MadsTransport::stats() const {
   std::ostringstream stream;
   stream << "received=" << _received_json_count
          << " published=" << _published_count
-         << " queued=" << _incoming_queue.size()
-         << " last_rx_topic=" << (_last_received_topic.empty() ? "-" : _last_received_topic)
-         << " last_tx_topic=" << (_last_published_topic.empty() ? "-" : _last_published_topic)
+         << " queued=" << _incoming_queue.size() << " last_rx_topic="
+         << (_last_received_topic.empty() ? "-" : _last_received_topic)
+         << " last_tx_topic="
+         << (_last_published_topic.empty() ? "-" : _last_published_topic)
          << " last_rx_age=" << age_string(_last_received_at)
          << " last_tx_age=" << age_string(_last_published_at)
          << " healthy=" << (_healthy ? "true" : "false");
@@ -505,17 +620,22 @@ std::string MadsTransport::stats() const {
 
 struct WebSocketTransport::Impl {
   explicit Impl(BridgeConfig bridge_config)
-    : config(std::move(bridge_config)),
-      base_path(normalize_ws_base_path(config.ws_path)) {}
+      : config(std::move(bridge_config)),
+        ws_base_path(normalize_ws_base_path(config.ws_path)),
+        http_base_path(normalize_http_base_path(config.http_path)) {}
 
   BridgeConfig config;
-  std::string base_path;
-  lws_context *context = nullptr;
+  std::string ws_base_path;
+  std::string http_base_path;
+  lws_context *ws_context = nullptr;
+  lws_context *http_context = nullptr;
+  WebSocketTransport *owner = nullptr;
   mutable std::mutex mutex;
   std::unordered_map<lws *, SessionState> sessions;
   std::deque<BridgeMessage> inbound_messages;
   bool started = false;
   bool healthy = true;
+  bool http_shared_with_ws = false;
   std::string error;
   std::size_t accepted_connections = 0;
   std::size_t closed_connections = 0;
@@ -528,77 +648,130 @@ struct WebSocketTransport::Impl {
   std::atomic<bool> stop_requested{false};
   std::thread service_thread;
 
-  static int callback(
-    lws *wsi,
-    lws_callback_reasons reason,
-    void *user,
-    void *in,
-    size_t len
-  ) {
+  static WebSocketTransport *transport_for_wsi(lws *wsi) {
     auto *context = lws_get_context(wsi);
-    auto *self =
-      static_cast<WebSocketTransport *>(lws_context_user(context));
+    if (context == nullptr) {
+      return nullptr;
+    }
+    return static_cast<WebSocketTransport *>(lws_context_user(context));
+  }
+
+  static int ws_callback(lws *wsi, lws_callback_reasons reason, void *user,
+                         void *in, size_t len) {
+    auto *self = transport_for_wsi(wsi);
     if (self == nullptr || self->_impl == nullptr) {
       return 0;
     }
-    return self->_impl->handle_callback(wsi, reason, user, in, len);
+    return self->_impl->handle_ws_callback(wsi, reason, user, in, len);
   }
 
-  int handle_callback(
-    lws *wsi,
-    lws_callback_reasons reason,
-    void *user,
-    void *in,
-    size_t len
-  ) {
+  static int http_callback(lws *wsi, lws_callback_reasons reason, void *user,
+                           void *in, size_t len) {
+    auto *self = transport_for_wsi(wsi);
+    if (self == nullptr || self->_impl == nullptr) {
+      return 0;
+    }
+    return self->_impl->handle_http_callback(wsi, reason, user, in, len);
+  }
+
+  static const lws_protocols *ws_protocols() {
+    static const lws_protocols protocols[] = {
+        {kProtocolName, &WebSocketTransport::Impl::ws_callback, 0, 4096, 0,
+         nullptr, 0},
+        LWS_PROTOCOL_LIST_TERM};
+    return protocols;
+  }
+
+  static const lws_protocols *http_protocols() {
+    static const lws_protocols protocols[] = {
+        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback,
+         sizeof(HttpSessionState), 0, 0, nullptr, 0},
+        LWS_PROTOCOL_LIST_TERM};
+    return protocols;
+  }
+
+  static const lws_protocols *combined_protocols() {
+    static const lws_protocols protocols[] = {
+        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback,
+         sizeof(HttpSessionState), 0, 0, nullptr, 0},
+        {kProtocolName, &WebSocketTransport::Impl::ws_callback, 0, 4096, 0,
+         nullptr, 0},
+        LWS_PROTOCOL_LIST_TERM};
+    return protocols;
+  }
+
+  bool should_share_http_with_ws() const {
+    return config.http_enabled && config.http_port == config.ws_port &&
+           config.http_host == config.ws_host;
+  }
+
+  bool create_context(lws_context *&target, int port, const char *iface,
+                      const lws_protocols *protocols,
+                      const char *failure_message) {
+    lws_context_creation_info info{};
+    info.port = port;
+    info.iface = iface;
+    info.protocols = protocols;
+    info.user = owner;
+    info.options = 0;
+
+    target = lws_create_context(&info);
+    if (target == nullptr) {
+      healthy = false;
+      error = failure_message;
+      return false;
+    }
+    return true;
+  }
+
+  int handle_ws_callback(lws *wsi, lws_callback_reasons reason, void *user,
+                         void *in, size_t len) {
     (void)user;
 
     switch (reason) {
     case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
       auto uri = request_uri(wsi);
-      auto topic = uri.has_value() ? topic_from_uri(*uri, base_path) : std::nullopt;
+      auto topic =
+          uri.has_value() ? topic_from_uri(*uri, ws_base_path) : std::nullopt;
       if (!topic.has_value()) {
         std::lock_guard<std::mutex> lock(mutex);
-        error = "Invalid WebSocket path; expected " + base_path + "/<topic>";
+        error = "Invalid WebSocket path; expected " + ws_base_path + "/<topic>";
         return 1;
       }
       break;
     }
-    case LWS_CALLBACK_ESTABLISHED:
-      {
-        auto uri = request_uri(wsi);
-        auto topic = uri.has_value() ? topic_from_uri(*uri, base_path) : std::nullopt;
-        if (!topic.has_value()) {
-          healthy = false;
-          error = "Missing topic for established WebSocket session";
-          return -1;
-        }
+    case LWS_CALLBACK_ESTABLISHED: {
+      auto uri = request_uri(wsi);
+      auto topic =
+          uri.has_value() ? topic_from_uri(*uri, ws_base_path) : std::nullopt;
+      if (!topic.has_value()) {
+        healthy = false;
+        error = "Missing topic for established WebSocket session";
+        return -1;
+      }
 
-        std::lock_guard<std::mutex> lock(mutex);
-        sessions.try_emplace(wsi, SessionState{.topic = *topic});
-        ++accepted_connections;
-        client_count_changed = true;
-      }
-      break;
-    case LWS_CALLBACK_CLOSED:
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        sessions.erase(wsi);
-        ++closed_connections;
-        client_count_changed = true;
-      }
-      break;
+      std::lock_guard<std::mutex> lock(mutex);
+      sessions.try_emplace(wsi, SessionState{.topic = *topic});
+      ++accepted_connections;
+      client_count_changed = true;
+    } break;
+    case LWS_CALLBACK_CLOSED: {
+      std::lock_guard<std::mutex> lock(mutex);
+      sessions.erase(wsi);
+      ++closed_connections;
+      client_count_changed = true;
+    } break;
     case LWS_CALLBACK_RECEIVE: {
       std::lock_guard<std::mutex> lock(mutex);
       auto iter = sessions.find(wsi);
       if (iter != sessions.end()) {
         iter->second.rx_buffer.append(static_cast<const char *>(in), len);
-        if (lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0) {
+        if (lws_is_final_fragment(wsi) &&
+            lws_remaining_packet_payload(wsi) == 0) {
           try {
-            inbound_messages.push_back(BridgeMessage{
-              iter->second.topic,
-              nlohmann::json::parse(iter->second.rx_buffer)
-            });
+            inbound_messages.push_back(
+                BridgeMessage{iter->second.topic,
+                              nlohmann::json::parse(iter->second.rx_buffer)});
             ++inbound_frames;
             last_inbound_at = std::chrono::steady_clock::now();
           } catch (const std::exception &exc) {
@@ -624,12 +797,8 @@ struct WebSocketTransport::Impl {
 
       std::vector<unsigned char> buffer(LWS_PRE + payload.size());
       std::copy(payload.begin(), payload.end(), buffer.begin() + LWS_PRE);
-      auto written = lws_write(
-        wsi,
-        buffer.data() + LWS_PRE,
-        payload.size(),
-        LWS_WRITE_TEXT
-      );
+      auto written = lws_write(wsi, buffer.data() + LWS_PRE, payload.size(),
+                               LWS_WRITE_TEXT);
       if (written < static_cast<int>(payload.size())) {
         std::lock_guard<std::mutex> lock(mutex);
         healthy = false;
@@ -666,10 +835,120 @@ struct WebSocketTransport::Impl {
 
     return 0;
   }
+
+  int handle_http_callback(lws *wsi, lws_callback_reasons reason, void *user,
+                           void *in, size_t len) {
+    auto *state = static_cast<HttpSessionState *>(user);
+
+    switch (reason) {
+    case LWS_CALLBACK_HTTP: {
+      if (!config.http_enabled) {
+        return 1;
+      }
+
+      std::string uri;
+      if (in != nullptr && len > 0) {
+        uri.assign(static_cast<const char *>(in), len);
+      } else {
+        uri = request_uri(wsi).value_or("/");
+      }
+
+      if (uri == "/bootstrap.json" ||
+          uri == http_base_path + "/bootstrap.json") {
+        auto payload = websocket_bootstrap_payload(
+            config, websocket_external_hosts(config));
+        if (!payload.has_value()) {
+          lws_return_http_status(wsi, HTTP_STATUS_SERVICE_UNAVAILABLE, nullptr);
+          return -1;
+        }
+
+        state->owned_payload = *payload;
+        state->dynamic_asset = EmbeddedWebAsset{
+            .path = "/bootstrap.json",
+            .content_type = "application/json; charset=utf-8",
+            .data = reinterpret_cast<const unsigned char *>(
+                state->owned_payload.data()),
+            .size = state->owned_payload.size(),
+            .spa_entry = false,
+            .cache_forever = false,
+        };
+        state->asset = &state->dynamic_asset;
+      } else {
+        auto resolved_path = resolve_http_request_path(config, uri);
+        if (resolved_path.empty()) {
+          lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND, nullptr);
+          return -1;
+        }
+
+        state->asset = find_embedded_web_asset(resolved_path);
+        if (state->asset == nullptr) {
+          lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND, nullptr);
+          return -1;
+        }
+      }
+
+      state->offset = 0;
+      if (write_http_response_headers(wsi, *state->asset) != 0) {
+        return 1;
+      }
+      lws_callback_on_writable(wsi);
+      return 0;
+    }
+    case LWS_CALLBACK_HTTP_WRITEABLE: {
+      if (state == nullptr || state->asset == nullptr) {
+        return -1;
+      }
+
+      auto remaining = state->asset->size - state->offset;
+      if (remaining == 0) {
+        auto completed = lws_http_transaction_completed(wsi);
+        state->asset = nullptr;
+        state->offset = 0;
+        return completed != 0 ? -1 : 0;
+      }
+
+      auto chunk_size = std::min(remaining, kHttpWriteChunkSize);
+      auto flags =
+          remaining > chunk_size ? LWS_WRITE_HTTP : LWS_WRITE_HTTP_FINAL;
+      auto written = lws_write(
+          wsi, const_cast<unsigned char *>(state->asset->data + state->offset),
+          chunk_size, static_cast<lws_write_protocol>(flags));
+      if (written < 0 || static_cast<std::size_t>(written) != chunk_size) {
+        healthy = false;
+        error = "Failed to write HTTP response body";
+        return -1;
+      }
+
+      state->offset += chunk_size;
+      if (state->offset < state->asset->size) {
+        lws_callback_on_writable(wsi);
+        return 0;
+      }
+
+      auto completed = lws_http_transaction_completed(wsi);
+      state->asset = nullptr;
+      state->offset = 0;
+      return completed != 0 ? -1 : 0;
+    }
+    case LWS_CALLBACK_CLOSED_HTTP:
+      if (state != nullptr) {
+        state->asset = nullptr;
+        state->offset = 0;
+        state->owned_payload.clear();
+      }
+      break;
+    default:
+      break;
+    }
+
+    return 0;
+  }
 };
 
 WebSocketTransport::WebSocketTransport(BridgeConfig config)
-  : _impl(std::make_unique<Impl>(std::move(config))) {}
+    : _impl(std::make_unique<Impl>(std::move(config))) {
+  _impl->owner = this;
+}
 
 WebSocketTransport::~WebSocketTransport() { stop(); }
 
@@ -678,51 +957,63 @@ bool WebSocketTransport::start() {
     return false;
   }
 
-  lws_set_log_level(
-    _impl->config.ws_silent ? 0 : (LLL_ERR | LLL_WARN | LLL_NOTICE),
-    nullptr
-  );
-
-  lws_context_creation_info info{};
-  static const lws_protocols protocols[] = {
-    {
-      kProtocolName,
-      &WebSocketTransport::Impl::callback,
-      0,
-      4096,
-      0,
-      nullptr,
-      0
-    },
-    LWS_PROTOCOL_LIST_TERM
-  };
-
-  info.port = _impl->config.ws_port;
-  info.iface = websocket_iface(_impl->config);
-  info.protocols = protocols;
-  info.user = this;
-  info.options = 0;
-
-  _impl->context = lws_create_context(&info);
-  if (_impl->context == nullptr) {
+  if (_impl->config.http_enabled && !has_embedded_web_assets()) {
     _impl->healthy = false;
-    _impl->error = "Failed to create libwebsockets context";
+    _impl->error =
+        "HTTP UI is enabled but no embedded web assets are available";
     return false;
+  }
+
+  lws_set_log_level(
+      _impl->config.ws_silent ? 0 : (LLL_ERR | LLL_WARN | LLL_NOTICE), nullptr);
+
+  _impl->http_shared_with_ws = _impl->should_share_http_with_ws();
+  if (_impl->http_shared_with_ws) {
+    if (!_impl->create_context(
+            _impl->ws_context, _impl->config.ws_port,
+            bind_iface(_impl->config.ws_host),
+            WebSocketTransport::Impl::combined_protocols(),
+            "Failed to create combined HTTP/WebSocket context")) {
+      return false;
+    }
+  } else {
+    if (!_impl->create_context(_impl->ws_context, _impl->config.ws_port,
+                               bind_iface(_impl->config.ws_host),
+                               WebSocketTransport::Impl::ws_protocols(),
+                               "Failed to create WebSocket context")) {
+      return false;
+    }
+
+    if (_impl->config.http_enabled) {
+      if (!_impl->create_context(_impl->http_context, _impl->config.http_port,
+                                 bind_iface(_impl->config.http_host),
+                                 WebSocketTransport::Impl::http_protocols(),
+                                 "Failed to create HTTP context")) {
+        if (_impl->ws_context != nullptr) {
+          lws_context_destroy(_impl->ws_context);
+          _impl->ws_context = nullptr;
+        }
+        return false;
+      }
+    }
   }
 
   _impl->started = true;
   _impl->stop_requested.store(false);
   _impl->service_thread = std::thread([impl = _impl.get()]() {
     while (!impl->stop_requested.load()) {
-      lws_service(impl->context, 0);
+      if (impl->ws_context != nullptr) {
+        lws_service(impl->ws_context, 0);
+      }
+      if (impl->http_context != nullptr) {
+        lws_service(impl->http_context, 0);
+      }
     }
   });
   return true;
 }
 
-void WebSocketTransport::poll() {
-  return;
-}
+void WebSocketTransport::poll() { return; }
 
 bool WebSocketTransport::broadcast(const BridgeMessage &message) {
   if (_impl == nullptr || !_impl->started || !_impl->healthy) {
@@ -742,7 +1033,9 @@ bool WebSocketTransport::broadcast(const BridgeMessage &message) {
       ++_impl->outbound_enqueued;
     }
   }
-  lws_cancel_service(_impl->context);
+  if (_impl->ws_context != nullptr) {
+    lws_cancel_service(_impl->ws_context);
+  }
 
   return true;
 }
@@ -761,16 +1054,28 @@ std::optional<BridgeMessage> WebSocketTransport::pop_incoming_message() {
 }
 
 void WebSocketTransport::stop() {
-  if (_impl == nullptr || _impl->context == nullptr) {
+  if (_impl == nullptr ||
+      (_impl->ws_context == nullptr && _impl->http_context == nullptr)) {
     return;
   }
   _impl->stop_requested.store(true);
-  lws_cancel_service(_impl->context);
+  if (_impl->ws_context != nullptr) {
+    lws_cancel_service(_impl->ws_context);
+  }
+  if (_impl->http_context != nullptr) {
+    lws_cancel_service(_impl->http_context);
+  }
   if (_impl->service_thread.joinable()) {
     _impl->service_thread.join();
   }
-  lws_context_destroy(_impl->context);
-  _impl->context = nullptr;
+  if (_impl->http_context != nullptr) {
+    lws_context_destroy(_impl->http_context);
+    _impl->http_context = nullptr;
+  }
+  if (_impl->ws_context != nullptr) {
+    lws_context_destroy(_impl->ws_context);
+    _impl->ws_context = nullptr;
+  }
   {
     std::lock_guard<std::mutex> lock(_impl->mutex);
     _impl->sessions.clear();
@@ -804,7 +1109,8 @@ bool WebSocketTransport::consume_client_count_changed(std::size_t &count) {
 }
 
 std::string WebSocketTransport::error() const {
-  return _impl == nullptr ? "WebSocket transport is not available" : _impl->error;
+  return _impl == nullptr ? "WebSocket transport is not available"
+                          : _impl->error;
 }
 
 std::string WebSocketTransport::stats() const {
@@ -834,16 +1140,14 @@ std::string WebSocketTransport::stats() const {
 }
 
 BridgeRuntime::BridgeRuntime(std::string agent_name, std::string settings_uri)
-  : _agent_name(std::move(agent_name)), _settings_uri(std::move(settings_uri)) {}
+    : _agent_name(std::move(agent_name)),
+      _settings_uri(std::move(settings_uri)) {}
 
-BridgeRuntime::BridgeRuntime(
-  std::unique_ptr<IMadsTransport> mads_transport,
-  std::unique_ptr<IWebSocketTransport> ws_transport,
-  BridgeConfig config
-) : _config(std::move(config)),
-    _mads_transport(std::move(mads_transport)),
-    _ws_transport(std::move(ws_transport)),
-    _manual_components(true) {}
+BridgeRuntime::BridgeRuntime(std::unique_ptr<IMadsTransport> mads_transport,
+                             std::unique_ptr<IWebSocketTransport> ws_transport,
+                             BridgeConfig config)
+    : _config(std::move(config)), _mads_transport(std::move(mads_transport)),
+      _ws_transport(std::move(ws_transport)), _manual_components(true) {}
 
 bool BridgeRuntime::initialize() {
   if (_initialized) {
@@ -857,13 +1161,15 @@ bool BridgeRuntime::initialize() {
       auto settings = agent->get_settings();
       _config = BridgeConfig::from_settings(settings);
       if (settings.contains("sub_topic") && settings["sub_topic"].is_array()) {
-        agent->set_sub_topic(settings["sub_topic"].get<std::vector<std::string>>());
+        agent->set_sub_topic(
+            settings["sub_topic"].get<std::vector<std::string>>());
       }
       if (settings.contains("pub_topic") && settings["pub_topic"].is_string()) {
         agent->set_pub_topic(settings["pub_topic"].get<std::string>());
       }
       agent->connect();
-      _mads_transport = std::make_unique<MadsTransport>(std::move(agent), _config);
+      _mads_transport =
+          std::make_unique<MadsTransport>(std::move(agent), _config);
       _ws_transport = std::make_unique<WebSocketTransport>(_config);
     }
 
@@ -883,7 +1189,7 @@ bool BridgeRuntime::initialize() {
     }
 
     _bridge_core =
-      std::make_unique<BridgeCore>(*_mads_transport, *_ws_transport);
+        std::make_unique<BridgeCore>(*_mads_transport, *_ws_transport);
     _initialized = true;
     return true;
   } catch (const std::exception &exc) {
@@ -897,7 +1203,8 @@ RuntimeDecision BridgeRuntime::idle() {
     return RuntimeDecision::stop;
   }
   if (!_mads_transport->healthy() || !_ws_transport->healthy()) {
-    _error = !_mads_transport->healthy() ? _mads_transport->error() : _ws_transport->error();
+    _error = !_mads_transport->healthy() ? _mads_transport->error()
+                                         : _ws_transport->error();
     return RuntimeDecision::stop;
   }
   if (_mads_transport->should_stop()) {
@@ -959,13 +1266,20 @@ std::vector<std::string> BridgeRuntime::websocket_external_addresses() const {
   return websocket_external_uris(_config);
 }
 
+std::vector<std::string> BridgeRuntime::http_external_hosts() const {
+  return ::MadsWebsockets::http_external_hosts(_config);
+}
+
+std::vector<std::string> BridgeRuntime::http_external_addresses() const {
+  return http_external_uris(_config);
+}
+
 std::optional<std::string> BridgeRuntime::websocket_bootstrap_payload() const {
   return websocket_bootstrap_payload(websocket_external_hosts());
 }
 
 std::optional<std::string> BridgeRuntime::websocket_bootstrap_payload(
-  const std::vector<std::string> &hosts
-) const {
+    const std::vector<std::string> &hosts) const {
   return ::MadsWebsockets::websocket_bootstrap_payload(_config, hosts);
 }
 

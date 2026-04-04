@@ -16,7 +16,7 @@ The finite state machine has:
   1 transition functions
 
 ******************************************************************************/
-    
+
 using namespace std;
 using namespace rang;
 
@@ -29,9 +29,9 @@ std::string startup_process_label(std::string agent_name) {
   return agent_name + " process started";
 }
 
-void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
-  auto addresses = runtime.websocket_external_addresses();
-  std::cout << "  Websocket addr:   " << style::bold;
+void print_addresses(std::string_view label,
+                     const std::vector<std::string> &addresses) {
+  std::cout << "  " << label << ":   " << style::bold;
   if (addresses.empty()) {
     std::cout << "<no external address found>";
   } else {
@@ -45,18 +45,26 @@ void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
   std::cout << style::reset << std::endl;
 }
 
+void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
+  print_addresses("Websocket addr", runtime.websocket_external_addresses());
+}
+
+void print_http_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
+  print_addresses("HTTP UI addr", runtime.http_external_addresses());
+}
+
 void print_websocket_qr(const MadsWebsockets::BridgeRuntime &runtime) {
-  auto payload = runtime.websocket_bootstrap_payload();
-  if (!payload.has_value()) {
+  auto addresses = runtime.http_external_addresses();
+  if (addresses.empty()) {
     return;
   }
 
-  auto qr = MadsWebsockets::render_terminal_qr(*payload);
+  auto qr = MadsWebsockets::render_terminal_qr(addresses.front());
   if (qr.empty()) {
     return;
   }
 
-  std::cout << "  Bootstrap QR:" << std::endl;
+  std::cout << "  Browser QR:" << std::endl;
   std::cout << qr;
 }
 
@@ -72,35 +80,34 @@ void print_connected_clients_line(std::size_t count, bool overwrite = false) {
   }
 }
 
-}
-    
-// SEARCH FOR Your Code Here FOR CODE INSERTION POINTS!
+} // namespace
 
+// SEARCH FOR Your Code Here FOR CODE INSERTION POINTS!
 
 namespace FSM {
 
-/*  ____  _        _       
- * / ___|| |_ __ _| |_ ___ 
+/*  ____  _        _
+ * / ___|| |_ __ _| |_ ___
  * \___ \| __/ _` | __/ _ \
  *  ___) | || (_| | ||  __/
  * |____/ \__\__,_|\__\___|
- *                         
- *   __                  _   _                 
- *  / _|_   _ _ __   ___| |_(_) ___  _ __  ___ 
+ *
+ *   __                  _   _
+ *  / _|_   _ _ __   ___| |_(_) ___  _ __  ___
  * | |_| | | | '_ \ / __| __| |/ _ \| '_ \/ __|
  * |  _| |_| | | | | (__| |_| | (_) | | | \__ \
  * |_|  \__,_|_| |_|\___|\__|_|\___/|_| |_|___/
- */                                             
+ */
 
 // Function to be executed in state STATE_INIT
 // valid return states: STATE_IDLE
-template<class T> 
-state_t do_init(T &data) {
+template <class T> state_t do_init(T &data) {
   if (!data.runtime.initialize()) {
     return FSM::STATE_STOP;
   }
   data.runtime.agent().info(cout);
   print_websocket_addresses(data.runtime);
+  print_http_addresses(data.runtime);
   print_websocket_qr(data.runtime);
   std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
   print_connected_clients_line(data.runtime.connected_clients(), true);
@@ -109,8 +116,7 @@ state_t do_init(T &data) {
 
 // Function to be executed in state STATE_IDLE
 // valid return states: NO_CHANGE, STATE_IDLE, STATE_RUN, STATE_STOP
-template<class T> 
-state_t do_idle(T &data) {
+template <class T> state_t do_idle(T &data) {
   switch (data.runtime.idle()) {
   case MadsWebsockets::RuntimeDecision::run:
     return FSM::STATE_RUN;
@@ -125,8 +131,7 @@ state_t do_idle(T &data) {
 
 // Function to be executed in state STATE_RUN
 // valid return states: NO_CHANGE, STATE_RUN, STATE_IDLE
-template<class T> 
-state_t do_run(T &data) {
+template <class T> state_t do_run(T &data) {
   auto next = data.runtime.run_once();
   std::size_t client_count = 0;
   auto changed = data.runtime.consume_client_count_changed(client_count);
@@ -153,33 +158,27 @@ state_t do_run(T &data) {
 
 // Function to be executed in state STATE_STOP
 // valid return states: NO_CHANGE
-template<class T> 
-state_t do_stop(T &data) {
+template <class T> state_t do_stop(T &data) {
   std::cout << std::endl;
   data.runtime.shutdown();
   return FSM::NO_CHANGE;
 }
 
-
-/*  _____                    _ _   _              
- * |_   _| __ __ _ _ __  ___(_) |_(_) ___  _ __   
+/*  _____                    _ _   _
+ * |_   _| __ __ _ _ __  ___(_) |_(_) ___  _ __
  *   | || '__/ _` | '_ \/ __| | __| |/ _ \| '_ \
- *   | || | | (_| | | | \__ \ | |_| | (_) | | | | 
- *   |_||_|  \__,_|_| |_|___/_|\__|_|\___/|_| |_| 
- *                                                
- *   __                  _   _                 
- *  / _|_   _ _ __   ___| |_(_) ___  _ __  ___ 
+ *   | || | | (_| | | | \__ \ | |_| | (_) | | | |
+ *   |_||_|  \__,_|_| |_|___/_|\__|_|\___/|_| |_|
+ *
+ *   __                  _   _
+ *  / _|_   _ _ __   ___| |_(_) ___  _ __  ___
  * | |_| | | | '_ \ / __| __| |/ _ \| '_ \/ __|
  * |  _| |_| | | | | (__| |_| | (_) | | | \__ \
  * |_|  \__,_|_| |_|\___|\__|_|\___/|_| |_|___/
- */                                              
+ */
 
 // This function is called in 1 transition:
 // 1. from run to idle
-template<class T>
-void reset(T &data) {
-  data.runtime.reset();
-}
-
+template <class T> void reset(T &data) { data.runtime.reset(); }
 
 }; // namespace FSM

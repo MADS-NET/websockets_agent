@@ -24,6 +24,10 @@ struct BridgeConfig {
   std::string ws_host = "0.0.0.0";
   int ws_port = 9002;
   std::string ws_path = "/mads";
+  bool http_enabled = true;
+  std::string http_host = "0.0.0.0";
+  int http_port = 8080;
+  std::string http_path = "/mads";
   std::chrono::milliseconds period{100};
   std::chrono::milliseconds receive_timeout{50};
   bool non_blocking = false;
@@ -148,11 +152,9 @@ private:
 class BridgeRuntime {
 public:
   BridgeRuntime(std::string agent_name, std::string settings_uri);
-  BridgeRuntime(
-    std::unique_ptr<IMadsTransport> mads_transport,
-    std::unique_ptr<IWebSocketTransport> ws_transport,
-    BridgeConfig config = {}
-  );
+  BridgeRuntime(std::unique_ptr<IMadsTransport> mads_transport,
+                std::unique_ptr<IWebSocketTransport> ws_transport,
+                BridgeConfig config = {});
 
   bool initialize();
   RuntimeDecision idle();
@@ -167,10 +169,11 @@ public:
   std::string error() const;
   std::vector<std::string> websocket_external_hosts() const;
   std::vector<std::string> websocket_external_addresses() const;
+  std::vector<std::string> http_external_hosts() const;
+  std::vector<std::string> http_external_addresses() const;
   std::optional<std::string> websocket_bootstrap_payload() const;
-  std::optional<std::string> websocket_bootstrap_payload(
-    const std::vector<std::string> &hosts
-  ) const;
+  std::optional<std::string>
+  websocket_bootstrap_payload(const std::vector<std::string> &hosts) const;
   std::size_t connected_clients() const;
   bool consume_client_count_changed(std::size_t &count);
   Mads::Agent &agent() const {

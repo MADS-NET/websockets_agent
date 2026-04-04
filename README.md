@@ -1,14 +1,16 @@
 # MADS WebSockets Bridge
 
-`mads-websockets` is a MADS agent that exposes MADS topics over WebSockets.
-It subscribes to the MADS broker, forwards matching MADS JSON messages to
-WebSocket clients, and accepts JSON published by WebSocket clients back into
-the MADS network.
+`mads-websockets` is a MADS agent that exposes MADS topics over WebSockets and
+can also serve a browser UI over plain HTTP. It subscribes to the MADS broker,
+forwards matching MADS JSON messages to WebSocket clients, and accepts JSON
+published by WebSocket clients back into the MADS network.
 
 The bridge is implemented as a small layered runtime:
 
 - `MadsTransport` handles broker-side I/O through `Mads::Agent`
 - `WebSocketTransport` handles client-side I/O through `libwebsockets`
+- the embedded web UI is exported from [`react_client`](react_client) and
+  served as static assets by `libwebsockets`
 - `BridgeCore` routes validated messages between the two transports
 - the FSM in [`src/fsm_agent_impl.hpp`](src/fsm_agent_impl.hpp) manages agent
   lifecycle
@@ -89,6 +91,10 @@ Relevant settings:
 - `ws_host`: interface to bind, default `0.0.0.0`
 - `ws_port`: WebSocket server port, default `9002`
 - `ws_path`: WebSocket root path, default `/mads`
+- `http_enabled`: serve the browser UI, default `true`
+- `http_host`: HTTP bind interface, default `0.0.0.0`
+- `http_port`: HTTP UI port, default `8080`
+- `http_path`: HTTP UI root path, default `/mads`
 - `period`: FSM loop period in milliseconds
 - `receive_timeout`: MADS receive timeout in milliseconds
 - `ws_silent`: if `true`, suppress `libwebsockets` log messages
@@ -114,19 +120,37 @@ At startup the agent prints the standard MADS info block, then:
 
 - `Websocket addr: ws://<host>:<port>/mads` for each detected external IPv4
   endpoint
-- `Bootstrap QR:` containing a JSON payload for the future Expo client:
-  `{"scheme":"ws","port":<port>,"path":"<root-path>","addresses":["<ip>", ...]}`
+- `HTTP UI addr: http://<host>:<port>/mads` for each detected external IPv4
+  endpoint when HTTP is enabled
+- `Browser QR:` containing the first detected HTTP UI URL
 - `Connected clients: N`
 
 The connected client count is updated in place whenever a client connects or
 disconnects.
 
-## React Native Client Skeleton
+## Browser UI
 
-The repository also includes a standalone Expo workspace under
-[`react_client`](react_client). It is intentionally not part of the native
-CMake build and serves as the starting point for a React Native client that
-will later consume the bridge bootstrap QR payload.
+The repository includes an Expo workspace under [`react_client`](react_client).
+During the native build, CMake exports it for the web, embeds the generated
+static files into the binary, and serves them at `http://<host>:<http_port>/mads`.
+
+The browser page fetches `http://<host>:<http_port>/bootstrap.json` from the
+same origin to learn the WebSocket `scheme`, `port`, and `path`.
+
+For frontend-only development:
+
+```bash
+cd react_client
+npm install
+npm run web
+```
+
+To export the browser UI manually:
+
+```bash
+cd react_client
+npm run export:web
+```
 
 ## `ws_client`
 
