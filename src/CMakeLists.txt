@@ -47,6 +47,7 @@ add_custom_command(
 )
 
 add_library(libMadsWebsockets STATIC
+  banner.cpp
   bridge.cpp
   "${REACT_WEB_ASSETS_CPP}"
 )

@@ -10,7 +10,7 @@ build now exports it for the web and embeds the generated static files into the
 - Expo managed app
 - TypeScript enabled
 - QR scanning for bridge bootstrap JSON
-- Connect, Listen, and Publish tabs
+- Listen and Publish tabs
 - Persistent form values and publish topic history
 - Live listener sockets active only while the Listen tab is open
 - Persistent publish socket that reconnects when the selected topic changes
@@ -50,7 +50,8 @@ uses the advertised `path` and `port` to build `ws://` URLs for the bridge.
 
 ## Behaviour notes
 
-- Connect opens one listener socket per selected topic.
+- Listen keeps the subscription topics field and a Subscribe button at the top of the pane.
+- Subscribe opens one listener socket per selected topic and reconnects when the subscription set changes.
 - If the topic field is empty or contains `_all`, the client uses one wildcard
   listener socket.
 - The Listen tab stores only the latest JSON payload per topic.

@@ -1,4 +1,3 @@
-#include "bridge.hpp"
 #include "terminal_qr.hpp"
 #include <rang.hpp>
 
@@ -31,7 +30,7 @@ std::string startup_process_label(std::string agent_name) {
 
 void print_addresses(std::string_view label,
                      const std::vector<std::string> &addresses) {
-  std::cout << "  " << label << ":   " << style::bold;
+  std::cout << "  " << label << ":  " << style::bold;
   if (addresses.empty()) {
     std::cout << "<no external address found>";
   } else {
@@ -46,38 +45,11 @@ void print_addresses(std::string_view label,
 }
 
 void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
-  print_addresses("Websocket addr", runtime.websocket_external_addresses());
+  print_addresses("Websocket addr.", runtime.websocket_external_addresses());
 }
 
 void print_http_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
-  print_addresses("HTTP UI addr", runtime.http_external_addresses());
-}
-
-void print_websocket_qr(const MadsWebsockets::BridgeRuntime &runtime) {
-  auto addresses = runtime.http_external_addresses();
-  if (addresses.empty()) {
-    return;
-  }
-
-  auto qr = MadsWebsockets::render_terminal_qr(addresses.front());
-  if (qr.empty()) {
-    return;
-  }
-
-  std::cout << "  Browser QR:" << std::endl;
-  std::cout << qr;
-}
-
-void print_connected_clients_line(std::size_t count, bool overwrite = false) {
-  if (overwrite) {
-    std::cout << "\r\033[2K";
-  }
-  std::cout << "Connected clients: " << style::bold << count << style::reset;
-  if (!overwrite) {
-    std::cout << std::endl;
-  } else {
-    std::cout << std::flush;
-  }
+  print_addresses("HTTP UI address", runtime.http_external_addresses());
 }
 
 } // namespace
@@ -108,9 +80,8 @@ template <class T> state_t do_init(T &data) {
   data.runtime.agent().info(cout);
   print_websocket_addresses(data.runtime);
   print_http_addresses(data.runtime);
-  print_websocket_qr(data.runtime);
-  std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
-  print_connected_clients_line(data.runtime.connected_clients(), true);
+  data.banner.render_footer(data.runtime.http_external_addresses(),
+                            data.runtime.connected_clients());
   return FSM::STATE_IDLE;
 }
 
@@ -138,19 +109,19 @@ template <class T> state_t do_run(T &data) {
   switch (next) {
   case MadsWebsockets::RuntimeDecision::idle:
     if (changed) {
-      print_connected_clients_line(client_count, true);
+      data.banner.update_client_count(client_count);
     }
     return FSM::STATE_IDLE;
   case MadsWebsockets::RuntimeDecision::stop:
     if (changed) {
-      print_connected_clients_line(client_count, true);
+      data.banner.update_client_count(client_count);
     }
     return FSM::STATE_STOP;
   case MadsWebsockets::RuntimeDecision::run:
   case MadsWebsockets::RuntimeDecision::stay:
   default:
     if (changed) {
-      print_connected_clients_line(client_count, true);
+      data.banner.update_client_count(client_count);
     }
     return FSM::STATE_RUN;
   }
@@ -160,6 +131,7 @@ template <class T> state_t do_run(T &data) {
 // valid return states: NO_CHANGE
 template <class T> state_t do_stop(T &data) {
   std::cout << std::endl;
+  data.banner.shutdown();
   data.runtime.shutdown();
   return FSM::NO_CHANGE;
 }

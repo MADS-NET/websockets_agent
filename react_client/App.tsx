@@ -1,10 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CameraView, type BarcodeScanningResult, useCameraPermissions } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import {
-  Alert,
+  Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -16,7 +14,7 @@ import {
 } from 'react-native';
 import { startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-type TabId = 'connect' | 'listen' | 'publish';
+type TabId = 'listen' | 'publish';
 
 type BootstrapPayload = {
   scheme: string;
@@ -49,6 +47,7 @@ type StatusInfo = {
 
 const kStorageKey = 'mads-websockets-react-client/state/v1';
 const kWebSocketProtocol = 'mads-websockets';
+const kMadsLogo = require('./assets/mads_logo_white.png');
 const kDefaultBootstrap: BootstrapPayload = {
   scheme: 'ws',
   port: 9002,
@@ -65,8 +64,7 @@ const kDefaultPersistedState: PersistedState = {
 };
 
 export default function App() {
-  const scanner_supported = Platform.OS !== 'web';
-  const [active_tab, set_active_tab] = useState<TabId>('connect');
+  const [active_tab, set_active_tab] = useState<TabId>('listen');
   const [hydrated, set_hydrated] = useState(false);
 
   const [address_input, set_address_input] = useState(kDefaultPersistedState.address_input);
@@ -83,20 +81,16 @@ export default function App() {
   const [listen_config, set_listen_config] = useState<ListenConfig | null>(null);
   const [listen_messages, set_listen_messages] = useState<Record<string, unknown>>({});
   const [listen_status, set_listen_status] = useState<StatusInfo>({
-    text: 'Configure a connection to start listening.',
+    text: 'Choose topics and subscribe to start listening.',
     tone: 'neutral',
   });
   const [publish_status, set_publish_status] = useState<StatusInfo>({
-    text: 'Pick a topic to keep a publisher connection ready.',
+    text: 'Pick a topic to keep a publisher socket ready.',
     tone: 'neutral',
   });
-  const [address_menu_open, set_address_menu_open] = useState(false);
   const [history_menu_open, set_history_menu_open] = useState(false);
-  const [scanner_visible, set_scanner_visible] = useState(false);
-  const [scanner_locked, set_scanner_locked] = useState(false);
   const [expand_all, set_expand_all] = useState(false);
 
-  const [camera_permission, request_camera_permission] = useCameraPermissions();
   const listen_sockets_ref = useRef<WebSocket[]>([]);
   const publish_socket_ref = useRef<WebSocket | null>(null);
   const listen_session_ref = useRef(0);
@@ -313,14 +307,14 @@ export default function App() {
   }, [publish_draft]);
 
   useEffect(() => {
-    const is_connected = listen_config != null;
-    if (!is_connected || resolved_endpoint == null || publish_topic.trim().length === 0) {
+    if (resolved_endpoint == null || publish_topic.trim().length === 0) {
       close_publish_socket(publish_socket_ref);
       set_publish_status({
-        text: is_connected
-          ? 'Pick a topic to keep a publisher connection ready.'
-          : 'Connect to the bridge to enable publishing.',
-        tone: is_connected ? 'neutral' : 'warning',
+        text:
+          resolved_endpoint == null
+            ? 'Waiting for bridge bootstrap to enable publishing.'
+            : 'Pick a topic to keep a publisher socket ready.',
+        tone: resolved_endpoint == null ? 'warning' : 'neutral',
       });
       return;
     }
@@ -372,83 +366,48 @@ export default function App() {
         socket.close();
       }
     };
-  }, [listen_config, publish_topic, resolved_endpoint]);
+  }, [publish_topic, resolved_endpoint]);
 
-  const connect_topics = useMemo(() => parse_subscription_topics(topics_input), [topics_input]);
-  const is_connected = listen_config != null;
-  const address_options = useMemo(() => {
-    if (bootstrap_payload == null) {
-      return [];
-    }
-    return bootstrap_payload.addresses.map((address) => ({
-      label: `${address}:${bootstrap_payload.port}`,
-      value: `${address}:${bootstrap_payload.port}`,
-    }));
-  }, [bootstrap_payload]);
-
-  const can_connect = resolved_endpoint != null;
+  const subscribe_topics = useMemo(() => parse_subscription_topics(topics_input), [topics_input]);
+  const can_subscribe = resolved_endpoint != null;
   const can_send =
-    is_connected &&
     publish_json_error == null &&
     publish_topic.trim().length > 0 &&
     publish_socket_ref.current?.readyState === WebSocket.OPEN;
 
-  function handle_connect_press() {
-    if (is_connected) {
-      set_active_tab('connect');
-      set_listen_config(null);
-      set_listen_status({
-        text: 'Disconnected from the bridge.',
-        tone: 'warning',
-      });
-      set_publish_status({
-        text: 'Publisher disconnected.',
-        tone: 'warning',
-      });
+  useEffect(() => {
+    if (active_tab !== 'listen' || resolved_endpoint == null || listen_config != null) {
       return;
     }
+
+    set_listen_config({
+      base_address: resolved_endpoint.base_address,
+      path: resolved_endpoint.path,
+      topics: subscribe_topics,
+    });
+    set_listen_status({
+      text: `Subscribing to ${subscribe_topics.join(', ')}...`,
+      tone: 'neutral',
+    });
+  }, [active_tab, listen_config, resolved_endpoint, subscribe_topics]);
+
+  function handle_subscribe_press() {
     if (resolved_endpoint == null) {
+      set_listen_status({
+        text: 'Waiting for bridge bootstrap before subscribing.',
+        tone: 'warning',
+      });
       return;
     }
     set_listen_config({
       base_address: resolved_endpoint.base_address,
       path: resolved_endpoint.path,
-      topics: connect_topics,
+      topics: subscribe_topics,
     });
-    set_active_tab('listen');
     set_listen_status({
-      text: `Prepared ${connect_topics.join(', ')} on ${resolved_endpoint.base_address}${resolved_endpoint.path}.`,
+      text: `Updating subscriptions to ${subscribe_topics.join(', ')}...`,
       tone: 'neutral',
     });
-  }
-
-  async function handle_open_scanner() {
-    const permission =
-      camera_permission?.granted === true
-        ? camera_permission
-        : await request_camera_permission();
-    if (!permission.granted) {
-      Alert.alert('Camera unavailable', 'QR scanning requires camera permission.');
-      return;
-    }
-    set_scanner_locked(false);
-    set_scanner_visible(true);
-  }
-
-  function handle_barcode_scanned(result: BarcodeScanningResult) {
-    if (scanner_locked) {
-      return;
-    }
-    set_scanner_locked(true);
-    const parsed = parse_bootstrap_payload(result.data);
-    if (parsed == null) {
-      Alert.alert('Invalid QR code', 'The scanned QR code does not contain a valid bridge bootstrap JSON.');
-      set_scanner_locked(false);
-      return;
-    }
-    set_bootstrap_payload(parsed);
-    set_address_input(`${parsed.addresses[0]}:${parsed.port}`);
-    set_scanner_visible(false);
   }
 
   function handle_send_press() {
@@ -475,16 +434,12 @@ export default function App() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.header}>
-          <Text style={styles.eyebrow}>MADS Gateway</Text>
-          <Text style={styles.title}>LAN client</Text>
-          <Text style={styles.subtitle}>
-            Configure the bridge, inspect the latest messages, and keep a publisher socket ready.
-          </Text>
+          <Image source={kMadsLogo} style={styles.header_logo} resizeMode="contain" />
+          <Text style={styles.header_title}>Websocket bridge</Text>
         </View>
 
         <View style={styles.tab_bar}>
           {([
-            ['connect', 'Connect'],
             ['listen', 'Listen'],
             ['publish', 'Publish'],
           ] as const).map(([tab_id, label]) => (
@@ -493,21 +448,13 @@ export default function App() {
               style={[
                 styles.tab_button,
                 active_tab === tab_id && styles.tab_button_active,
-                tab_id !== 'connect' && !is_connected && styles.tab_button_disabled,
               ]}
-              onPress={() => {
-                if (tab_id !== 'connect' && !is_connected) {
-                  return;
-                }
-                set_active_tab(tab_id);
-              }}
-              disabled={tab_id !== 'connect' && !is_connected}
+              onPress={() => set_active_tab(tab_id)}
             >
               <Text
                 style={[
                   styles.tab_button_text,
                   active_tab === tab_id && styles.tab_button_text_active,
-                  tab_id !== 'connect' && !is_connected && styles.tab_button_text_disabled,
                 ]}
               >
                 {label}
@@ -521,111 +468,41 @@ export default function App() {
           contentContainerStyle={styles.scroll_content}
           keyboardShouldPersistTaps="handled"
         >
-          {active_tab === 'connect' ? (
-            <View style={styles.panel}>
-              <Text style={styles.section_title}>Bridge bootstrap</Text>
-              <Text style={styles.section_body}>
-                {scanner_supported
-                  ? 'Scan the QR from the bridge banner or type the LAN address manually.'
-                  : 'This browser page loads its bridge settings from the gateway. You can still override the LAN address manually.'}
-              </Text>
-
-              <View style={styles.row}>
-                {scanner_supported ? (
-                  <Pressable style={styles.primary_button} onPress={handle_open_scanner}>
-                    <Text style={styles.primary_button_text}>Scan QR</Text>
-                  </Pressable>
-                ) : null}
-                <View style={styles.badge}>
-                  <Text style={styles.badge_text}>
-                    Path {normalize_path(bootstrap_payload?.path ?? kDefaultBootstrap.path)}
-                  </Text>
-                </View>
-              </View>
-
-              <LabeledField label="Address:port">
-                <TextInput
-                  value={address_input}
-                  onChangeText={set_address_input}
-                  placeholder="192.168.1.20:9002"
-                  placeholderTextColor="#9f927e"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-              </LabeledField>
-
-              {address_options.length > 0 ? (
-                <View style={styles.dropdown_block}>
-                  <Pressable
-                    style={styles.secondary_button}
-                    onPress={() => set_address_menu_open((current) => !current)}
-                  >
-                    <Text style={styles.secondary_button_text}>
-                      {address_menu_open ? 'Hide QR addresses' : 'Show QR addresses'}
-                    </Text>
-                  </Pressable>
-                  {address_menu_open ? (
-                    <View style={styles.dropdown_menu}>
-                      {address_options.map((option) => (
-                        <Pressable
-                          key={option.value}
-                          style={styles.dropdown_item}
-                          onPress={() => {
-                            set_address_input(option.value);
-                            set_address_menu_open(false);
-                          }}
-                        >
-                          <Text style={styles.dropdown_item_text}>{option.label}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-
-              <LabeledField label="Subscription topics">
-                <TextInput
-                  value={topics_input}
-                  onChangeText={set_topics_input}
-                  placeholder="_all or topic_a, topic_b"
-                  placeholderTextColor="#9f927e"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-              </LabeledField>
-
-              <View style={styles.info_card}>
-                <Text style={styles.info_card_label}>Resolved endpoint</Text>
-                <Text style={styles.info_card_value}>
-                  {resolved_endpoint == null
-                    ? 'Enter a valid address to enable connection.'
-                    : `${resolved_endpoint.base_address}${resolved_endpoint.path}`}
-                </Text>
-                <Text style={styles.info_card_hint}>
-                  Topics: {connect_topics.join(', ')}
-                </Text>
-              </View>
-
-              <Pressable
-                style={[
-                  styles.primary_button,
-                  !is_connected && !can_connect && styles.button_disabled,
-                ]}
-                onPress={handle_connect_press}
-                disabled={!is_connected && !can_connect}
-              >
-                <Text style={styles.primary_button_text}>
-                  {is_connected ? 'Disconnect' : 'Connect'}
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-
           {active_tab === 'listen' ? (
             <View style={styles.panel}>
               <Text style={styles.section_title}>Latest messages</Text>
+              <Text style={styles.section_body}>
+                Update the topic list here. The browser reconnects listener sockets when you subscribe.
+              </Text>
+              <View style={styles.subscribe_row}>
+                <View style={styles.subscribe_input_wrap}>
+                  <TextInput
+                    value={topics_input}
+                    onChangeText={set_topics_input}
+                    placeholder="_all or topic_a, topic_b"
+                    placeholderTextColor="#9f927e"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.input}
+                  />
+                </View>
+                <Pressable
+                  style={[styles.primary_button, !can_subscribe && styles.button_disabled, styles.subscribe_button]}
+                  onPress={handle_subscribe_press}
+                  disabled={!can_subscribe}
+                >
+                  <Text style={styles.primary_button_text}>Subscribe</Text>
+                </Pressable>
+              </View>
+              <View style={styles.info_card}>
+                <Text style={styles.info_card_label}>Subscription set</Text>
+                <Text style={styles.info_card_value}>{subscribe_topics.join(', ')}</Text>
+                <Text style={styles.info_card_hint}>
+                  {resolved_endpoint == null
+                    ? 'Waiting for bridge bootstrap.'
+                    : `${resolved_endpoint.base_address}${resolved_endpoint.path}`}
+                </Text>
+              </View>
               <StatusPill status={listen_status} />
               <View style={styles.row}>
                 <Pressable
@@ -646,7 +523,7 @@ export default function App() {
 
               {Object.keys(listen_messages).length === 0 ? (
                 <Text style={styles.empty_state}>
-                  No messages captured yet. Connect and keep this tab open to receive updates.
+                  No messages captured yet. Subscribe and keep this tab open to receive updates.
                 </Text>
               ) : (
                 Object.entries(listen_messages)
@@ -750,31 +627,6 @@ export default function App() {
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
-
-      <Modal visible={scanner_visible && scanner_supported} animationType="slide" onRequestClose={() => set_scanner_visible(false)}>
-        <SafeAreaView style={styles.modal_root}>
-          <View style={styles.modal_header}>
-            <Text style={styles.modal_title}>Scan bridge QR</Text>
-            <Pressable style={styles.modal_close_button} onPress={() => set_scanner_visible(false)}>
-              <Text style={styles.modal_close_text}>Close</Text>
-            </Pressable>
-          </View>
-          <View style={styles.camera_shell}>
-            <CameraView
-              style={styles.camera}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={handle_barcode_scanned}
-            />
-            <View pointerEvents="none" style={styles.camera_overlay}>
-              <View style={styles.scan_frame} />
-              <Text style={styles.camera_hint}>
-                Center the QR code shown in the bridge banner.
-              </Text>
-            </View>
-          </View>
-        </SafeAreaView>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -1102,26 +954,21 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 22,
-    paddingTop: 18,
-    gap: 6,
+    paddingTop: 20,
+    paddingBottom: 6,
+    alignItems: 'center',
+    gap: 10,
   },
-  eyebrow: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.4,
-    color: '#8f6133',
+  header_logo: {
+    width: 220,
+    height: 72,
   },
-  title: {
-    fontSize: 34,
-    lineHeight: 38,
+  header_title: {
+    fontSize: 30,
+    lineHeight: 34,
     fontWeight: '800',
     color: '#2a1d11',
-  },
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#5c4f43',
+    textAlign: 'center',
   },
   tab_bar: {
     flexDirection: 'row',
@@ -1186,6 +1033,17 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
     alignItems: 'center',
+  },
+  subscribe_row: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'stretch',
+  },
+  subscribe_input_wrap: {
+    flex: 1,
+  },
+  subscribe_button: {
+    minWidth: 124,
   },
   primary_button: {
     borderRadius: 16,
