@@ -151,7 +151,8 @@ private:
 
 class BridgeRuntime {
 public:
-  BridgeRuntime(std::string agent_name, std::string settings_uri);
+  BridgeRuntime(std::string agent_name, std::string settings_uri,
+                bool webserver_enabled = false);
   BridgeRuntime(std::unique_ptr<IMadsTransport> mads_transport,
                 std::unique_ptr<IWebSocketTransport> ws_transport,
                 BridgeConfig config = {});
@@ -193,6 +194,7 @@ private:
   bool _initialized = false;
   bool _manual_components = false;
   bool _shutdown = false;
+  bool _webserver_enabled = false;
   std::string _error;
 };
 

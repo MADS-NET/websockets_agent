@@ -43,6 +43,7 @@ std::string footer_text(const std::vector<std::string> &http_addresses,
   stream << "  Browser QR:\n";
   stream << qr;
   stream << "URL: " << style::bold << http_addresses[safe_index] << style::reset
+         << " (↑/↓ to select another address)"
          << '\n';
   stream << "Connected clients: " << style::bold << connected_clients
          << style::reset << '\n';

@@ -1139,9 +1139,11 @@ std::string WebSocketTransport::stats() const {
   return stream.str();
 }
 
-BridgeRuntime::BridgeRuntime(std::string agent_name, std::string settings_uri)
+BridgeRuntime::BridgeRuntime(std::string agent_name, std::string settings_uri,
+                             bool webserver_enabled)
     : _agent_name(std::move(agent_name)),
-      _settings_uri(std::move(settings_uri)) {}
+      _settings_uri(std::move(settings_uri)),
+      _webserver_enabled(webserver_enabled) {}
 
 BridgeRuntime::BridgeRuntime(std::unique_ptr<IMadsTransport> mads_transport,
                              std::unique_ptr<IWebSocketTransport> ws_transport,
@@ -1160,6 +1162,7 @@ bool BridgeRuntime::initialize() {
       agent->init(false, false);
       auto settings = agent->get_settings();
       _config = BridgeConfig::from_settings(settings);
+      _config.http_enabled = _config.http_enabled && _webserver_enabled;
       if (settings.contains("sub_topic") && settings["sub_topic"].is_array()) {
         agent->set_sub_topic(
             settings["sub_topic"].get<std::vector<std::string>>());

@@ -49,7 +49,22 @@ void print_websocket_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
 }
 
 void print_http_addresses(const MadsWebsockets::BridgeRuntime &runtime) {
+  if (!runtime.config().http_enabled) {
+    return;
+  }
   print_addresses("HTTP UI address", runtime.http_external_addresses());
+}
+
+void print_connected_clients_line(std::size_t count, bool overwrite = false) {
+  if (overwrite) {
+    std::cout << "\r\033[2K";
+  }
+  std::cout << "Connected clients: " << style::bold << count << style::reset;
+  if (!overwrite) {
+    std::cout << std::endl;
+  } else {
+    std::cout << std::flush;
+  }
 }
 
 } // namespace
@@ -80,8 +95,13 @@ template <class T> state_t do_init(T &data) {
   data.runtime.agent().info(cout);
   print_websocket_addresses(data.runtime);
   print_http_addresses(data.runtime);
-  data.banner.render_footer(data.runtime.http_external_addresses(),
-                            data.runtime.connected_clients());
+  std::cout << startup_process_label(data.runtime.agent_name()) << std::endl;
+  if (data.runtime.config().http_enabled) {
+    data.banner.render_footer(data.runtime.http_external_addresses(),
+                              data.runtime.connected_clients());
+  } else {
+    print_connected_clients_line(data.runtime.connected_clients(), true);
+  }
   return FSM::STATE_IDLE;
 }
 
@@ -109,19 +129,31 @@ template <class T> state_t do_run(T &data) {
   switch (next) {
   case MadsWebsockets::RuntimeDecision::idle:
     if (changed) {
-      data.banner.update_client_count(client_count);
+      if (data.runtime.config().http_enabled) {
+        data.banner.update_client_count(client_count);
+      } else {
+        print_connected_clients_line(client_count, true);
+      }
     }
     return FSM::STATE_IDLE;
   case MadsWebsockets::RuntimeDecision::stop:
     if (changed) {
-      data.banner.update_client_count(client_count);
+      if (data.runtime.config().http_enabled) {
+        data.banner.update_client_count(client_count);
+      } else {
+        print_connected_clients_line(client_count, true);
+      }
     }
     return FSM::STATE_STOP;
   case MadsWebsockets::RuntimeDecision::run:
   case MadsWebsockets::RuntimeDecision::stay:
   default:
     if (changed) {
-      data.banner.update_client_count(client_count);
+      if (data.runtime.config().http_enabled) {
+        data.banner.update_client_count(client_count);
+      } else {
+        print_connected_clients_line(client_count, true);
+      }
     }
     return FSM::STATE_RUN;
   }

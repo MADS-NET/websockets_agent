@@ -31,7 +31,8 @@ int main(int argc, char *argv[]) {
   Options options(argv[0]);
   // clang-format off
   options.add_options()
-    ("n,name", "Agent name override", value<string>());
+    ("n,name", "Agent name override", value<string>())
+    ("w,webserver", "Also start the embedded webserver for hosting the web UI");
   SETUP_OPTIONS(options, Agent);
   // clang-format on
 
@@ -62,7 +63,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  FsmData data{MadsWebsockets::BridgeRuntime(agent_name, settings_uri)};
+  auto webserver_enabled = options_parsed.count("webserver") != 0;
+
+  FsmData data{MadsWebsockets::BridgeRuntime(agent_name, settings_uri,
+                                             webserver_enabled)};
 
   auto fsm = FSM::FiniteStateMachine(&data);
   fsm.set_timing_function(
