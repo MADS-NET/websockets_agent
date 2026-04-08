@@ -146,6 +146,8 @@ All settings (topics, draft message, publish history) are persisted in
 `localStorage`.
 
 > To enable the browser UI, launch the agent with the option `-w` or `--webserver`.
+> 
+> **NOTE**: upon launch, the command `mads-websockets -w` presents a QR code that links to the WebUI. Since the latter is exposed on unencrypted http://, though, come smartphone could point the browser to `https://<ip>:8080`, which is not available. If that happens, just manually edit the URL from `https://<ip>:8080` to `http://<ip>:8080` (no 's').
 
 ## `ws_client`
 
