@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MADS WebSocket Bridge</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #e7dfd0;
+  color: #2a1d11;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  padding: 20px 22px 6px;
+  text-align: center;
+}
+.header img { width: 220px; height: 72px; object-fit: contain; }
+.header h1 { font-size: 30px; font-weight: 800; color: #2a1d11; margin-top: 10px; }
+.tab-bar {
+  display: flex; gap: 10px; padding: 18px 18px 0;
+}
+.tab-btn {
+  flex: 1; border-radius: 16px; border: 1px solid #cfbea3; background: #f5efe3;
+  padding: 12px; text-align: center; font-size: 15px; font-weight: 700;
+  color: #5c4f43; cursor: pointer; transition: background .15s, color .15s;
+}
+.tab-btn:hover { background: #ebe3d3; }
+.tab-btn.active { background: #2a1d11; border-color: #2a1d11; color: #fff7ea; }
+.content { flex: 1; padding: 18px; padding-bottom: 28px; }
+.panel {
+  border-radius: 26px; background: #fbf7ef; border: 1px solid #d8cab2;
+  padding: 18px; display: flex; flex-direction: column; gap: 16px;
+}
+.panel[hidden] { display: none; }
+.section-title { font-size: 24px; font-weight: 800; color: #2a1d11; }
+.section-body { font-size: 15px; line-height: 22px; color: #5c4f43; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.subscribe-row { display: flex; gap: 10px; align-items: stretch; }
+.subscribe-row .input-wrap { flex: 1; }
+input[type="text"], textarea {
+  width: 100%; border-radius: 16px; border: 1px solid #d8cab2; background: #fffdf8;
+  padding: 12px 16px; font-size: 15px; color: #2a1d11; outline: none;
+  font-family: inherit;
+}
+input[type="text"]:focus, textarea:focus { border-color: #b08d60; }
+textarea { min-height: 140px; resize: vertical; font-family: "SF Mono", "Menlo", "Consolas", monospace; font-size: 14px; }
+.btn-primary {
+  border-radius: 16px; background: #b65f2a; color: #fff8ef; padding: 14px 18px;
+  font-size: 15px; font-weight: 800; border: none; cursor: pointer; text-align: center;
+  min-width: 124px;
+}
+.btn-primary:hover { background: #a3521f; }
+.btn-primary:disabled { opacity: .45; cursor: default; }
+.btn-secondary {
+  border-radius: 14px; border: 1px solid #d0bf9f; background: #f5ede0;
+  padding: 12px 14px; font-size: 14px; font-weight: 700; color: #4c4033;
+  cursor: pointer;
+}
+.btn-secondary:hover { background: #ebe3d3; }
+.info-card {
+  border-radius: 16px; background: #f5ede0; border: 1px solid #d8cab2; padding: 14px 16px;
+}
+.info-card-label { font-size: 13px; font-weight: 700; color: #7d6e5c; margin-bottom: 4px; }
+.info-card-value { font-size: 15px; font-weight: 700; color: #2a1d11; word-break: break-all; }
+.info-card-hint { font-size: 13px; color: #9f927e; margin-top: 4px; }
+.status-pill {
+  border-radius: 14px; padding: 10px 14px; font-size: 14px; font-weight: 600;
+  border: 1px solid transparent;
+}
+.status-neutral  { background: #eee2ca; border-color: #d4b98d; color: #5c4f43; }
+.status-success  { background: #dff0d6; border-color: #8eb87d; color: #3a5e2e; }
+.status-warning  { background: #f7e8b7; border-color: #d4b25f; color: #6a5520; }
+.status-danger   { background: #f6d5d1; border-color: #d67a6e; color: #8b2e22; }
+.empty-state {
+  font-size: 14px; color: #9f927e; text-align: center; padding: 24px 0;
+  font-style: italic;
+}
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 14px; font-weight: 700; color: #4c4033; }
+.validation { font-size: 13px; font-weight: 600; }
+.validation-ok { color: #4a8a3a; }
+.validation-err { color: #c0392b; }
+.dropdown-menu {
+  border-radius: 14px; border: 1px solid #d8cab2; background: #fffdf8;
+  overflow: hidden;
+}
+.dropdown-item {
+  padding: 10px 16px; cursor: pointer; font-size: 14px; color: #2a1d11;
+  border-bottom: 1px solid #eee6d8;
+}
+.dropdown-item:last-child { border-bottom: none; }
+.dropdown-item:hover { background: #f5ede0; }
+/* JSON tree */
+.message-card {
+  border-radius: 16px; background: #f9f4eb; border: 1px solid #e0d5c3;
+  padding: 12px 14px; overflow-x: auto;
+}
+.tree-node { font-family: "SF Mono", "Menlo", "Consolas", monospace; font-size: 13px; }
+.tree-node details { margin-left: 14px; }
+.tree-node details:first-child { margin-left: 0; }
+.tree-node summary {
+  cursor: pointer; list-style: none; user-select: none; padding: 1px 0;
+}
+.tree-node summary::-webkit-details-marker { display: none; }
+.tree-node summary::before {
+  content: "▸ "; color: #9f927e; display: inline;
+}
+.tree-node details[open] > summary::before { content: "▾ "; }
+.tree-label { font-weight: 700; color: #4c4033; }
+.tree-summary { color: #9f927e; font-weight: 400; }
+.tree-value { color: #2a1d11; }
+.tree-leaf { margin-left: 14px; padding: 1px 0; }
+.tree-leaf:first-child { margin-left: 0; }
+.tree-string { color: #a0522d; }
+.tree-number { color: #1a6fb5; }
+.tree-boolean { color: #8b008b; }
+.tree-null { color: #9f927e; font-style: italic; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <img src="/mads_logo_white.png" alt="MADS" />
+  <h1>Websocket bridge</h1>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="listen" onclick="switchTab('listen')">Listen</button>
+  <button class="tab-btn" data-tab="publish" onclick="switchTab('publish')">Publish</button>
+</div>
+
+<div class="content">
+
+  <!-- ═══════════ LISTEN PANEL ═══════════ -->
+  <div class="panel" id="panel-listen">
+    <div class="section-title">Latest messages</div>
+    <div class="section-body">
+      Update the topic list here. The browser reconnects listener sockets when you subscribe.
+    </div>
+    <div class="subscribe-row">
+      <div class="input-wrap">
+        <input type="text" id="topics-input" placeholder="_all or topic_a, topic_b" />
+      </div>
+      <button class="btn-primary" id="btn-subscribe" onclick="handleSubscribe()">Subscribe</button>
+    </div>
+    <div class="info-card">
+      <div class="info-card-label">Subscription set</div>
+      <div class="info-card-value" id="sub-set-value">_all</div>
+      <div class="info-card-hint" id="sub-set-hint">Waiting for bridge bootstrap.</div>
+    </div>
+    <div class="status-pill status-neutral" id="listen-status">
+      Choose topics and subscribe to start listening.
+    </div>
+    <div class="row">
+      <button class="btn-secondary" id="btn-expand" onclick="toggleExpandAll()">Expand all</button>
+      <button class="btn-secondary" onclick="clearMessages()">Clear</button>
+    </div>
+    <div id="messages-container">
+      <div class="empty-state" id="empty-state">
+        No messages captured yet. Subscribe and keep this tab open to receive updates.
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ PUBLISH PANEL ═══════════ -->
+  <div class="panel" id="panel-publish" hidden>
+    <div class="section-title">Publisher</div>
+    <div class="status-pill status-neutral" id="publish-status">
+      Pick a topic to keep a publisher socket ready.
+    </div>
+    <div class="field">
+      <label class="field-label">Topic</label>
+      <input type="text" id="publish-topic" placeholder="topic_name" />
+    </div>
+    <div class="row">
+      <button class="btn-secondary" id="btn-history-toggle" onclick="toggleHistoryMenu()">Show past topics</button>
+      <button class="btn-secondary" onclick="clearHistory()">Clear history</button>
+    </div>
+    <div class="dropdown-menu" id="history-menu" hidden></div>
+    <div class="field">
+      <label class="field-label">JSON message</label>
+      <textarea id="publish-draft">{\n  \n}</textarea>
+    </div>
+    <div class="validation" id="validation-msg"></div>
+    <button class="btn-primary" id="btn-send" onclick="handleSend()" disabled>Send</button>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+// ── State ───────────────────────────────────────────────
+const STORAGE_KEY = "mads-websockets-client/state/v1";
+const WS_PROTOCOL = "mads-websockets";
+
+let bootstrap = null;       // { scheme, port, path, addresses }
+let activeTab = "listen";
+let expandAll = false;
+
+// Listen state
+let listenSockets = [];
+let listenMessages = {};    // topic -> last message
+let listenConfig = null;    // { baseAddress, path, topics }
+
+// Publish state
+let publishSocket = null;
+let publishHistory = [];
+
+// ── DOM refs ────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+
+// ── Persistence ─────────────────────────────────────────
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.topics_input != null)    $("topics-input").value = s.topics_input;
+    if (s.publish_topic != null)   $("publish-topic").value = s.publish_topic;
+    if (s.publish_draft != null)   $("publish-draft").value = s.publish_draft;
+    if (Array.isArray(s.publish_history)) publishHistory = s.publish_history;
+  } catch (_) { /* ignore */ }
+}
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      topics_input:    $("topics-input").value,
+      publish_topic:   $("publish-topic").value,
+      publish_draft:   $("publish-draft").value,
+      publish_history: publishHistory,
+    }));
+  } catch (_) { /* ignore */ }
+}
+
+// ── Bootstrap ───────────────────────────────────────────
+async function fetchBootstrap() {
+  try {
+    const resp = await fetch(window.location.origin + "/bootstrap.json");
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    if (typeof data.scheme !== "string" || typeof data.port !== "number" ||
+        typeof data.path !== "string" || !Array.isArray(data.addresses)) return;
+    const addresses = data.addresses.filter(a => typeof a === "string" && a.length > 0);
+    if (addresses.length === 0) return;
+    bootstrap = {
+      scheme: data.scheme,
+      port:   data.port,
+      path:   normalizePath(data.path),
+      addresses: addresses,
+    };
+    updateInfoCard();
+    updatePublishState();
+  } catch (e) {
+    console.warn("Failed to load bootstrap.json", e);
+  }
+}
+
+// ── Endpoint resolution ─────────────────────────────────
+function resolveEndpoint() {
+  if (!bootstrap) return null;
+  const host = window.location.hostname;
+  return {
+    baseAddress: bootstrap.scheme + "://" + host + ":" + bootstrap.port,
+    path: bootstrap.path,
+  };
+}
+
+function buildTopicUrl(baseAddress, path, topic) {
+  return baseAddress + normalizePath(path) + "/" + encodeURIComponent(topic);
+}
+
+function normalizePath(p) {
+  if (!p || p.trim().length === 0) return "/mads";
+  const prefixed = p.startsWith("/") ? p : "/" + p;
+  return prefixed.replace(/\/+$/, "") || "/mads";
+}
+
+// ── Tab switching ───────────────────────────────────────
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.tab === tab);
+  });
+  $("panel-listen").hidden  = (tab !== "listen");
+  $("panel-publish").hidden = (tab !== "publish");
+
+  if (tab === "listen" && listenConfig) {
+    // Re-subscribe when coming back to listen tab
+    openListenSockets();
+  }
+  if (tab !== "listen") {
+    closeListenSockets();
+  }
+}
+
+// ── Listen ──────────────────────────────────────────────
+function parseTopics(input) {
+  const items = input.split(",").map(s => s.trim()).filter((v, i, a) => v.length > 0 && a.indexOf(v) === i);
+  if (items.length === 0 || items.includes("_all")) return ["_all"];
+  return items;
+}
+
+function handleSubscribe() {
+  const endpoint = resolveEndpoint();
+  if (!endpoint) {
+    setListenStatus("Waiting for bridge bootstrap before subscribing.", "warning");
+    return;
+  }
+  const topics = parseTopics($("topics-input").value);
+  listenConfig = { baseAddress: endpoint.baseAddress, path: endpoint.path, topics: topics };
+  $("sub-set-value").textContent = topics.join(", ");
+  updateInfoCard();
+  openListenSockets();
+  saveState();
+}
+
+function openListenSockets() {
+  closeListenSockets();
+  if (!listenConfig) return;
+  if (activeTab !== "listen") return;
+
+  setListenStatus("Connecting to " + listenConfig.topics.join(", ") + "...", "neutral");
+  let opened = 0;
+  const cfg = listenConfig;
+
+  listenSockets = cfg.topics.map(topic => {
+    const url = buildTopicUrl(cfg.baseAddress, cfg.path, topic);
+    const ws = new WebSocket(url, WS_PROTOCOL);
+
+    ws.onopen = () => {
+      opened++;
+      setListenStatus("Listening on " + opened + "/" + cfg.topics.length + " connection(s).", "success");
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.data);
+        const msg = normalizeIncoming(topic, parsed);
+        listenMessages[msg.topic] = msg.message;
+        renderMessages();
+      } catch (e) {
+        setListenStatus("Received invalid JSON on " + topic + ": " + e.message, "danger");
+      }
+    };
+    ws.onerror = () => {
+      setListenStatus("Listener connection failed for topic " + topic + ".", "danger");
+    };
+    ws.onclose = () => {
+      if (activeTab === "listen") {
+        setListenStatus("Listener for " + topic + " closed.", "warning");
+      }
+    };
+    return ws;
+  });
+}
+
+function closeListenSockets() {
+  for (const ws of listenSockets) { try { ws.close(); } catch (_) {} }
+  listenSockets = [];
+}
+
+function normalizeIncoming(topic, message) {
+  if (topic === "_all" && message && typeof message === "object" &&
+      typeof message.topic === "string" && "message" in message) {
+    return { topic: message.topic, message: message.message };
+  }
+  return { topic, message };
+}
+
+function setListenStatus(text, tone) {
+  const el = $("listen-status");
+  el.textContent = text;
+  el.className = "status-pill status-" + tone;
+}
+
+function updateInfoCard() {
+  const endpoint = resolveEndpoint();
+  const topics = parseTopics($("topics-input").value);
+  $("sub-set-value").textContent = topics.join(", ");
+  $("sub-set-hint").textContent = endpoint
+    ? endpoint.baseAddress + endpoint.path
+    : "Waiting for bridge bootstrap.";
+}
+
+function toggleExpandAll() {
+  expandAll = !expandAll;
+  $("btn-expand").textContent = expandAll ? "Collapse all" : "Expand all";
+  renderMessages();
+}
+
+function clearMessages() {
+  listenMessages = {};
+  renderMessages();
+}
+
+function renderMessages() {
+  const container = $("messages-container");
+  const keys = Object.keys(listenMessages).sort();
+
+  if (keys.length === 0) {
+    container.innerHTML = '<div class="empty-state" id="empty-state">' +
+      'No messages captured yet. Subscribe and keep this tab open to receive updates.</div>';
+    return;
+  }
+
+  // Build a map of existing cards by topic for in-place updates
+  const existingCards = {};
+  for (const card of Array.from(container.querySelectorAll(".message-card"))) {
+    const topic = card.dataset.topic;
+    if (topic) existingCards[topic] = card;
+  }
+
+  // Remove cards for topics no longer present
+  for (const topic of Object.keys(existingCards)) {
+    if (!(topic in listenMessages)) {
+      existingCards[topic].remove();
+      delete existingCards[topic];
+    }
+  }
+
+  // Remove empty-state placeholder if present
+  const empty = container.querySelector(".empty-state");
+  if (empty) empty.remove();
+
+  // Update or insert cards in sorted order
+  let prevCard = null;
+  for (const topic of keys) {
+    let card = existingCards[topic];
+    if (card) {
+      // Collect open state of all <details> by path before replacing content
+      const treeRoot = card.querySelector(".tree-node");
+      const openPaths = collectOpenPaths(treeRoot);
+      const tree = document.createElement("div");
+      tree.className = "tree-node";
+      tree.appendChild(buildTree(topic, listenMessages[topic], expandAll));
+      restoreOpenPaths(tree, openPaths);
+      treeRoot.replaceWith(tree);
+    } else {
+      card = document.createElement("div");
+      card.className = "message-card";
+      card.dataset.topic = topic;
+      const tree = document.createElement("div");
+      tree.className = "tree-node";
+      tree.appendChild(buildTree(topic, listenMessages[topic], expandAll));
+      card.appendChild(tree);
+      // Insert in sorted position
+      if (prevCard && prevCard.nextSibling) {
+        container.insertBefore(card, prevCard.nextSibling);
+      } else if (!prevCard) {
+        container.prepend(card);
+      } else {
+        container.appendChild(card);
+      }
+    }
+    prevCard = card;
+  }
+}
+
+// Collect the open/closed state of every <details> as a set of index-paths
+function collectOpenPaths(root) {
+  const open = new Set();
+  (function walk(el, path) {
+    const children = el.querySelectorAll(":scope > details");
+    children.forEach((d, i) => {
+      const p = path + "/" + i;
+      if (d.open) open.add(p);
+      walk(d, p);
+    });
+  })(root, "");
+  return open;
+}
+
+// Restore open state from collected paths
+function restoreOpenPaths(root, openPaths) {
+  (function walk(el, path) {
+    const children = el.querySelectorAll(":scope > details");
+    children.forEach((d, i) => {
+      const p = path + "/" + i;
+      d.open = openPaths.has(p);
+      walk(d, p);
+    });
+  })(root, "");
+}
+
+function buildTree(label, value, open) {
+  if (value === null || value === undefined || typeof value !== "object") {
+    const div = document.createElement("div");
+    div.className = "tree-leaf";
+    div.innerHTML = '<span class="tree-label">' + esc(label) + ': </span>' + formatScalar(value);
+    return div;
+  }
+
+  const details = document.createElement("details");
+  if (open) details.open = true;
+  const summary = document.createElement("summary");
+  summary.innerHTML = '<span class="tree-label">' + esc(label) + '</span>' +
+    '<span class="tree-summary">' + summarize(value) + '</span>';
+  details.appendChild(summary);
+
+  const entries = Array.isArray(value)
+    ? value.map((v, i) => ["[" + i + "]", v])
+    : Object.entries(value);
+  for (const [k, v] of entries) {
+    details.appendChild(buildTree(k, v, open));
+  }
+  return details;
+}
+
+function formatScalar(v) {
+  if (v === null || v === undefined) return '<span class="tree-null">' + String(v) + '</span>';
+  if (typeof v === "string") return '<span class="tree-string">"' + esc(v) + '"</span>';
+  if (typeof v === "number") return '<span class="tree-number">' + v + '</span>';
+  if (typeof v === "boolean") return '<span class="tree-boolean">' + v + '</span>';
+  return '<span class="tree-value">' + esc(JSON.stringify(v)) + '</span>';
+}
+
+function summarize(v) {
+  if (Array.isArray(v)) return " [" + v.length + "]";
+  if (v && typeof v === "object") return " {" + Object.keys(v).length + "}";
+  return "";
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// ── Publish ─────────────────────────────────────────────
+let publishTopicDebounce = null;
+
+function setupPublishListeners() {
+  $("publish-topic").addEventListener("input", () => {
+    clearTimeout(publishTopicDebounce);
+    publishTopicDebounce = setTimeout(() => {
+      reconnectPublisher();
+      saveState();
+    }, 400);
+  });
+
+  $("publish-draft").addEventListener("input", () => {
+    validateDraft();
+    saveState();
+  });
+}
+
+function validateDraft() {
+  const raw = $("publish-draft").value.trim();
+  const msgEl = $("validation-msg");
+  if (raw.length === 0) {
+    msgEl.textContent = "Enter a JSON payload.";
+    msgEl.className = "validation validation-err";
+    updateSendButton();
+    return false;
+  }
+  try {
+    JSON.parse(raw);
+    msgEl.textContent = "Valid JSON payload.";
+    msgEl.className = "validation validation-ok";
+    updateSendButton();
+    return true;
+  } catch (e) {
+    msgEl.textContent = e.message;
+    msgEl.className = "validation validation-err";
+    updateSendButton();
+    return false;
+  }
+}
+
+function updateSendButton() {
+  const topic = $("publish-topic").value.trim();
+  const jsonOk = $("validation-msg").classList.contains("validation-ok");
+  const socketReady = publishSocket && publishSocket.readyState === WebSocket.OPEN;
+  $("btn-send").disabled = !(jsonOk && topic.length > 0 && socketReady);
+}
+
+function updatePublishState() {
+  reconnectPublisher();
+}
+
+function reconnectPublisher() {
+  closePublishSocket();
+  const endpoint = resolveEndpoint();
+  const topic = $("publish-topic").value.trim();
+
+  if (!endpoint) {
+    setPublishStatus("Waiting for bridge bootstrap to enable publishing.", "warning");
+    updateSendButton();
+    return;
+  }
+  if (topic.length === 0) {
+    setPublishStatus("Pick a topic to keep a publisher socket ready.", "neutral");
+    updateSendButton();
+    return;
+  }
+
+  setPublishStatus("Connecting publisher to " + topic + "...", "neutral");
+  const url = buildTopicUrl(endpoint.baseAddress, endpoint.path, topic);
+  const ws = new WebSocket(url, WS_PROTOCOL);
+  publishSocket = ws;
+
+  ws.onopen = () => {
+    if (publishSocket !== ws) return;
+    setPublishStatus("Publisher ready on " + topic + ".", "success");
+    updateSendButton();
+  };
+  ws.onerror = () => {
+    if (publishSocket !== ws) return;
+    setPublishStatus("Publisher connection failed for " + topic + ".", "danger");
+    updateSendButton();
+  };
+  ws.onclose = () => {
+    if (publishSocket !== ws) return;
+    setPublishStatus("Publisher disconnected for " + topic + ".", "warning");
+    updateSendButton();
+  };
+}
+
+function closePublishSocket() {
+  if (publishSocket) { try { publishSocket.close(); } catch (_) {} }
+  publishSocket = null;
+}
+
+function handleSend() {
+  if (!publishSocket || publishSocket.readyState !== WebSocket.OPEN) return;
+  if (!validateDraft()) return;
+
+  const topic = $("publish-topic").value.trim();
+  publishSocket.send($("publish-draft").value.trim());
+
+  // Update history
+  publishHistory = [topic, ...publishHistory.filter(t => t !== topic)].slice(0, 12);
+  saveState();
+
+  setPublishStatus("Sent message on " + topic + ".", "success");
+}
+
+function setPublishStatus(text, tone) {
+  const el = $("publish-status");
+  el.textContent = text;
+  el.className = "status-pill status-" + tone;
+}
+
+function toggleHistoryMenu() {
+  const menu = $("history-menu");
+  const btn = $("btn-history-toggle");
+  if (menu.hidden) {
+    renderHistoryMenu();
+    menu.hidden = false;
+    btn.textContent = "Hide past topics";
+  } else {
+    menu.hidden = true;
+    btn.textContent = "Show past topics";
+  }
+}
+
+function renderHistoryMenu() {
+  const menu = $("history-menu");
+  menu.innerHTML = "";
+  if (publishHistory.length === 0) {
+    menu.hidden = true;
+    $("btn-history-toggle").textContent = "Show past topics";
+    return;
+  }
+  for (const topic of publishHistory) {
+    const item = document.createElement("div");
+    item.className = "dropdown-item";
+    item.textContent = topic;
+    item.addEventListener("click", () => {
+      $("publish-topic").value = topic;
+      $("history-menu").hidden = true;
+      $("btn-history-toggle").textContent = "Show past topics";
+      reconnectPublisher();
+      saveState();
+    });
+    menu.appendChild(item);
+  }
+}
+
+function clearHistory() {
+  publishHistory = [];
+  $("history-menu").innerHTML = "";
+  $("history-menu").hidden = true;
+  $("btn-history-toggle").textContent = "Show past topics";
+  saveState();
+}
+
+// ── Init ────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  // Fixup the textarea default value (literal \n in HTML)
+  $("publish-draft").value = "{\n  \n}";
+
+  loadState();
+  setupPublishListeners();
+  validateDraft();
+  updateInfoCard();
+  fetchBootstrap().then(() => {
+    // Auto-subscribe if we have a config from last session
+    const topics = parseTopics($("topics-input").value);
+    const endpoint = resolveEndpoint();
+    if (endpoint) {
+      listenConfig = { baseAddress: endpoint.baseAddress, path: endpoint.path, topics: topics };
+      $("sub-set-value").textContent = topics.join(", ");
+      openListenSockets();
+    }
+  });
+});
+
+// Save on input changes for topic field
+$("topics-input")?.addEventListener("input", () => {
+  updateInfoCard();
+  saveState();
+});
+</script>
+</body>
+</html>

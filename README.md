@@ -9,8 +9,8 @@ The bridge is implemented as a small layered runtime:
 
 - `MadsTransport` handles broker-side I/O through `Mads::Agent`
 - `WebSocketTransport` handles client-side I/O through `libwebsockets`
-- the embedded web UI is exported from [`react_client`](react_client) and
-  served as static assets by `libwebsockets`
+- the embedded web UI lives in [`web`](web) as a single vanilla HTML file and
+  is served as static assets by `libwebsockets`
 - `BridgeCore` routes validated messages between the two transports
 - the FSM in [`src/fsm_agent_impl.hpp`](src/fsm_agent_impl.hpp) manages agent
   lifecycle
@@ -130,27 +130,25 @@ disconnects.
 
 ## Browser UI
 
-The repository includes an Expo workspace under [`react_client`](react_client).
-During the native build, CMake exports it for the web, embeds the generated
-static files into the binary, and serves them at `http://<host>:<http_port>/mads`.
+The repository includes a lightweight browser UI under [`web`](web). It is a
+single `index.html` file with inline CSS and JavaScript — no build tools, no
+Node.js, no npm required. During the CMake build the contents of `web/` are
+embedded into the binary and served at `http://<host>:<http_port>/mads`.
 
 The browser page fetches `http://<host>:<http_port>/bootstrap.json` from the
 same origin to learn the WebSocket `scheme`, `port`, and `path`.
 
-For frontend-only development:
+The UI provides two tabs:
 
-```bash
-cd react_client
-npm install
-npm run web
-```
+- **Listen** — subscribe to one or more MADS topics (or `_all`) and view
+  incoming JSON messages in a collapsible tree
+- **Publish** — pick a topic, edit a JSON payload, and send it into the MADS
+  network
 
-To export the browser UI manually:
+All settings (topics, draft message, publish history) are persisted in
+`localStorage`.
 
-```bash
-cd react_client
-npm run export:web
-```
+> To enable the browser UI, launch the agent with the option `-w` or `--webserver`.
 
 ## `ws_client`
 
