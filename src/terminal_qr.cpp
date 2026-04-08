@@ -1,15 +1,21 @@
 #include "terminal_qr.hpp"
 
+#if defined(_MSC_VER)
+#include <string>
+#include <string_view>
+#else
 #include <qr.h>
 
 #include <sstream>
 #include <string>
 #include <string_view>
+#endif
 
 namespace MadsWebsockets {
 
 namespace {
 
+#if !defined(_MSC_VER)
 constexpr int kQuietZoneModules = 2;
 constexpr std::string_view kDarkModule = "██";
 constexpr std::string_view kLightModule = "  ";
@@ -38,6 +44,7 @@ std::string render_terminal_qr_impl(std::string_view payload) {
 
   return stream.str();
 }
+#endif
 
 } // namespace
 
@@ -45,7 +52,12 @@ std::string render_terminal_qr(std::string_view payload) {
   if (payload.empty()) {
     return {};
   }
+#if defined(_MSC_VER)
+  return std::string{"[QR unavailable on this Windows build]\n"} +
+         std::string{payload} + '\n';
+#else
   return render_terminal_qr_impl<1>(payload);
+#endif
 }
 
 } // namespace MadsWebsockets

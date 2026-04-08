@@ -14,8 +14,10 @@
 
 #include <libwebsockets.h>
 #include <nlohmann/json.hpp>
+#if defined(MADS_HAS_READLINE)
 #include <readline/history.h>
 #include <readline/readline.h>
+#endif
 
 using namespace std;
 using namespace cxxopts;
@@ -28,6 +30,43 @@ constexpr char kTopicRoot[] = "/mads";
 constexpr char kProtocolName[] = "mads-websockets";
 
 atomic<bool> Running{true};
+
+#if defined(MADS_LWS_WITHOUT_TLS)
+constexpr bool kTlsSupported = false;
+#else
+constexpr bool kTlsSupported = true;
+#endif
+
+char *prompt_line(const char *prompt) {
+#if defined(MADS_HAS_READLINE)
+  return readline(prompt);
+#else
+  cout << prompt;
+  cout.flush();
+
+  string input;
+  if (!getline(cin, input)) {
+    return nullptr;
+  }
+
+  auto *buffer = static_cast<char *>(malloc(input.size() + 1));
+  if (buffer == nullptr) {
+    return nullptr;
+  }
+
+  copy(input.begin(), input.end(), buffer);
+  buffer[input.size()] = '\0';
+  return buffer;
+#endif
+}
+
+void remember_history(const char *line) {
+#if defined(MADS_HAS_READLINE)
+  add_history(line);
+#else
+  (void)line;
+#endif
+}
 
 struct ClientConfig {
   string address = kDefaultBaseAddress;
@@ -68,8 +107,13 @@ public:
       auto address = build_address(_config.address, topic);
       auto parsed = parse_address(address);
       if (!parsed.has_value()) {
-        cerr << "Invalid address: " << address
-             << " (expected ws://<host>:<port>/mads/<topic>)" << endl;
+        cerr << "Invalid address: " << address;
+        if (address.starts_with("wss://") && !kTlsSupported) {
+          cerr << " (this build does not include TLS support for wss://)";
+        } else {
+          cerr << " (expected ws://<host>:<port>/mads/<topic>)";
+        }
+        cerr << endl;
         return EXIT_FAILURE;
       }
       _addresses.push_back(*parsed);
@@ -154,6 +198,9 @@ private:
       parsed.path.insert(parsed.path.begin(), '/');
     }
     parsed.use_ssl = parsed.protocol == "wss";
+    if (parsed.use_ssl && !kTlsSupported) {
+      return nullopt;
+    }
     if (!parsed.path.starts_with("/mads/") || parsed.path.size() <= 6) {
       return nullopt;
     }
@@ -194,7 +241,7 @@ private:
     info.port = CONTEXT_PORT_NO_LISTEN;
     info.protocols = protocols;
     info.user = this;
-    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    info.options = kTlsSupported ? LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT : 0;
 
     _context = lws_create_context(&info);
     if (_context == nullptr) {
@@ -246,7 +293,7 @@ private:
 
   void input_loop() {
     while (Running.load()) {
-      char *line = readline("> ");
+      char *line = prompt_line("> ");
       if (line == nullptr) {
         request_close();
         return;
@@ -263,7 +310,7 @@ private:
       try {
         auto json = nlohmann::json::parse(input);
         auto normalized = json.dump();
-        add_history(normalized.c_str());
+        remember_history(normalized.c_str());
         {
           lock_guard<mutex> lock(_state.mutex);
           _state.outbound_queue.push_back(std::move(normalized));
