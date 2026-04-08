@@ -1,4 +1,12 @@
 find_package(Mads REQUIRED CONFIG)
+
+# Ensure the nlohmann/json headers from the Mads install take precedence over
+# any system-installed version (avoids ABI namespace mismatches).
+get_target_property(_mads_inc Mads::Mads INTERFACE_INCLUDE_DIRECTORIES)
+if(_mads_inc)
+  include_directories(BEFORE SYSTEM ${_mads_inc})
+endif()
+
 set(LIBWEBSOCKETS_LINK_TARGET "")
 set(LIBWEBSOCKETS_FETCHED OFF)
 
