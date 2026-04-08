@@ -279,15 +279,15 @@ std::optional<std::string> request_uri(lws *wsi) {
     return std::nullopt;
   }
 
-  std::string uri(static_cast<std::size_t>(length), '\0');
-  auto copied = lws_hdr_copy(wsi, uri.data(), static_cast<int>(uri.size()) + 1,
-                             WSI_TOKEN_GET_URI);
+  std::vector<char> buffer(static_cast<std::size_t>(length) + 1, '\0');
+  auto copied =
+      lws_hdr_copy(wsi, buffer.data(), static_cast<int>(buffer.size()),
+                   WSI_TOKEN_GET_URI);
   if (copied <= 0) {
     return std::nullopt;
   }
 
-  uri.resize(static_cast<std::size_t>(copied));
-  return uri;
+  return std::string(buffer.data(), static_cast<std::size_t>(copied));
 }
 
 const char *bind_iface(const std::string &host) {
@@ -632,6 +632,7 @@ struct WebSocketTransport::Impl {
   WebSocketTransport *owner = nullptr;
   mutable std::mutex mutex;
   std::unordered_map<lws *, SessionState> sessions;
+  std::unordered_map<lws *, HttpSessionState> http_sessions;
   std::deque<BridgeMessage> inbound_messages;
   bool started = false;
   bool healthy = true;
@@ -684,16 +685,16 @@ struct WebSocketTransport::Impl {
 
   static const lws_protocols *http_protocols() {
     static const lws_protocols protocols[] = {
-        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback,
-         sizeof(HttpSessionState), 0, 0, nullptr, 0},
+        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback, 0, 0, 0,
+         nullptr, 0},
         LWS_PROTOCOL_LIST_TERM};
     return protocols;
   }
 
   static const lws_protocols *combined_protocols() {
     static const lws_protocols protocols[] = {
-        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback,
-         sizeof(HttpSessionState), 0, 0, nullptr, 0},
+        {kHttpProtocolName, &WebSocketTransport::Impl::http_callback, 0, 0, 0,
+         nullptr, 0},
         {kProtocolName, &WebSocketTransport::Impl::ws_callback, 0, 4096, 0,
          nullptr, 0},
         LWS_PROTOCOL_LIST_TERM};
@@ -838,13 +839,29 @@ struct WebSocketTransport::Impl {
 
   int handle_http_callback(lws *wsi, lws_callback_reasons reason, void *user,
                            void *in, size_t len) {
-    auto *state = static_cast<HttpSessionState *>(user);
+    (void)user;
+
+    auto ensure_http_state = [&]() -> HttpSessionState & {
+      auto [iter, inserted] = http_sessions.try_emplace(wsi);
+      (void)inserted;
+      return iter->second;
+    };
+
+    auto state_for_wsi = [&]() -> HttpSessionState * {
+      auto iter = http_sessions.find(wsi);
+      if (iter == http_sessions.end()) {
+        return nullptr;
+      }
+      return &iter->second;
+    };
 
     switch (reason) {
     case LWS_CALLBACK_HTTP: {
       if (!config.http_enabled) {
         return 1;
       }
+
+      auto &state = ensure_http_state();
 
       std::string uri;
       if (in != nullptr && len > 0) {
@@ -862,17 +879,17 @@ struct WebSocketTransport::Impl {
           return -1;
         }
 
-        state->owned_payload = *payload;
-        state->dynamic_asset = EmbeddedWebAsset{
+        state.owned_payload = *payload;
+        state.dynamic_asset = EmbeddedWebAsset{
             .path = "/bootstrap.json",
             .content_type = "application/json; charset=utf-8",
             .data = reinterpret_cast<const unsigned char *>(
-                state->owned_payload.data()),
-            .size = state->owned_payload.size(),
+                state.owned_payload.data()),
+            .size = state.owned_payload.size(),
             .spa_entry = false,
             .cache_forever = false,
         };
-        state->asset = &state->dynamic_asset;
+        state.asset = &state.dynamic_asset;
       } else {
         auto resolved_path = resolve_http_request_path(config, uri);
         if (resolved_path.empty()) {
@@ -880,21 +897,22 @@ struct WebSocketTransport::Impl {
           return -1;
         }
 
-        state->asset = find_embedded_web_asset(resolved_path);
-        if (state->asset == nullptr) {
+        state.asset = find_embedded_web_asset(resolved_path);
+        if (state.asset == nullptr) {
           lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND, nullptr);
           return -1;
         }
       }
 
-      state->offset = 0;
-      if (write_http_response_headers(wsi, *state->asset) != 0) {
+      state.offset = 0;
+      if (write_http_response_headers(wsi, *state.asset) != 0) {
         return 1;
       }
       lws_callback_on_writable(wsi);
       return 0;
     }
     case LWS_CALLBACK_HTTP_WRITEABLE: {
+      auto *state = state_for_wsi();
       if (state == nullptr || state->asset == nullptr) {
         return -1;
       }
@@ -931,11 +949,11 @@ struct WebSocketTransport::Impl {
       return completed != 0 ? -1 : 0;
     }
     case LWS_CALLBACK_CLOSED_HTTP:
-      if (state != nullptr) {
+      if (auto *state = state_for_wsi(); state != nullptr) {
         state->asset = nullptr;
         state->offset = 0;
-        state->owned_payload.clear();
       }
+      http_sessions.erase(wsi);
       break;
     default:
       break;
@@ -1079,6 +1097,7 @@ void WebSocketTransport::stop() {
   {
     std::lock_guard<std::mutex> lock(_impl->mutex);
     _impl->sessions.clear();
+    _impl->http_sessions.clear();
     _impl->inbound_messages.clear();
   }
   _impl->started = false;
