@@ -40,11 +40,8 @@ Examples:
 The project expects these libraries to be available on the system:
 
 - Mads
-- OpenSSL
 - libwebsockets
 - readline
-- nlohmann/json
-- cxxopts
 
 The current CMake configuration finds Mads with `find_package(Mads CONFIG)` and
 finds `libwebsockets` through `pkg-config`. The terminal QR helper dependency
